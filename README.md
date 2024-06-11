@@ -2,6 +2,13 @@
 
 A simple fortran module that generates figures using PGF/Tikz.
 
+## Preview
+
+|   |   |
+|---|---|
+| ![](./assets/tikzplot0.pdf) | ![](./assets/tikzplot_4.pdf) |
+| ![](./assets/tikzplot_1_le.pdf) | ![](./assets/tikzplot_4_le.pdf) |
+
 ## Installation
 
 *Dependency*: [PGF/Tikz](https://www.ctan.org/tex-archive/graphics/pgf/)
@@ -125,4 +132,5 @@ Sloped/.code = {
 
 ## Example
 
-Run `fpm run --example` to see example
+Run `fpm run --example` or `gfortran -o run src/tikz_module.F90 example/example.f90 && ./run ` to see example
+
