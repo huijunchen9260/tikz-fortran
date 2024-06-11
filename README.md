@@ -4,10 +4,12 @@ A simple fortran module that generates figures using PGF/Tikz.
 
 ## Preview
 
-|   |   |
-|---|---|
-| ![](./assets/tikzplot0.png) | ![](./assets/tikzplot_4.png) |
-| ![](./assets/tikzplot_1_le.png) | ![](./assets/tikzplot_4_le.png) |
+|                                 |                                            |
+| ---                             | ---                                        |
+| `call tikz(z)`                  | `call tikz(x, y)` |
+| ![](./assets/tikzplot0.png)     | ![](./assets/tikzplot_4.png)               |
+| `call tikz(z, legend = "Example")` | `call tikz(x, y, legend = "$+1$; $+2$; $+3$; $+4$ ")`|
+| ![](./assets/tikzplot_1_le.png) | ![](./assets/tikzplot_4_le.png)            |
 
 ## Installation
 
