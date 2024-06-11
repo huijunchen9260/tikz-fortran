@@ -6,8 +6,8 @@ A simple fortran module that generates figures using PGF/Tikz.
 
 |   |   |
 |---|---|
-| ![](./assets/tikzplot0.pdf) | ![](./assets/tikzplot_4.pdf) |
-| ![](./assets/tikzplot_1_le.pdf) | ![](./assets/tikzplot_4_le.pdf) |
+| ![](./assets/tikzplot0.png) | ![](./assets/tikzplot_4.png) |
+| ![](./assets/tikzplot_1_le.png) | ![](./assets/tikzplot_4_le.png) |
 
 ## Installation
 
