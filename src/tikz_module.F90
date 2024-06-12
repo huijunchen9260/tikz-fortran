@@ -67,7 +67,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     character(len=*), intent(in), optional :: title, xlabel, ylabel, legend, name, options
 
     !local
-    integer :: j
+    integer :: i, j
     integer :: unitno                                               ! thread save unit number
     integer :: thread_id
     integer :: ni, nj                                               ! dimension of x and y
@@ -84,7 +84,10 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     real(wp) :: xticsdist, yticsdist                                ! tics distances
     character(len=:), allocatable :: palette                        ! color palette
     character(len=:), allocatable :: cnames                         ! names of the color palette
-    character(len=:), dimension(:), allocatable :: colorvec, colorname
+    character(len=:), dimension(:), allocatable :: colorvec, colorname, optionvec
+    character(len=:), dimension(:), allocatable :: optmp
+    character(len=30), dimension(:), allocatable :: opcolor, oplinestyle, oplegend
+    character(len=:), allocatable :: legend_type, legend_loc
     character(len=30), dimension(size(y, 2)) :: legendvec
 
     ! ---------------------- !
@@ -102,13 +105,13 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     if (present(xlabel)) then
         xlb = xlabel
     else
-        xlb = 'x'
+        xlb = '$x$'
     endif
 
     if (present(ylabel)) then
         ylb = ylabel
     else
-        ylb = 'y'
+        ylb = '$y$'
     endif
 
 
@@ -133,20 +136,99 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
               '7E2F8E; ' // & ! purple
               '77AC30; ' // & ! green
               '4DBEEE; ' // & ! light-blue
-              'A2142F; '      ! red
+              'A2142F '       ! red
 
     cnames = "blue; orange; yellow; purple; green; light-blue; red"
 
     colorvec = decompose_str(palette, genLoc(palette, ';'))
     colorname = decompose_str(cnames, genLoc(cnames, ';'))
 
+    ! ----------------- !
+    ! Decompose options !
+    ! ----------------- !
+
+    if (present(options)) then
+        optionvec = decompose_str(options, genLoc(options, ';'))
+        do i = 1, size(optionvec), 1
+            optmp = decompose_str(optionvec(i), genLoc(optionvec(i), ':'))
+            select case (trim(optmp(1)))
+                case ('legend')
+                    oplegend = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                case ('le') ! shorthand for legend
+                    oplegend = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                case ('color')
+                    opcolor = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                    if (size(opcolor) .ne. nj) then
+                        error stop "options error: numbers of color does not equal to numbers of columns on y"
+                    endif
+                case ('c') ! shorthand for color
+                    opcolor = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                    if (size(opcolor) .ne. nj) then
+                        error stop "options error: numbers of color does not equal to numbers of columns on y"
+                    endif
+                case ('linestyle')
+                    oplinestyle = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                    if (size(oplinestyle) .ne. nj) then
+                        error stop "options error: numbers of line style does not equal to numbers of columns on y"
+                    endif
+                case ('ls') ! shorthand for linestyle
+                    oplinestyle = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                    if (size(oplinestyle) .ne. nj) then
+                        error stop "options error: numbers of line style does not equal to numbers of columns on y"
+                    endif
+            end select
+            deallocate(optmp)
+        enddo
+    endif
+
+    ! ------------------------------------- !
+    ! Assign oplegend to type and location  !
+    ! ------------------------------------- !
+
+    if (allocated(oplegend)) then
+        do j = 1, size(oplegend), 1
+            if (trim(oplegend(j)) == 'line' .or. trim(oplegend(j)) == 'box') then
+                legend_type = oplegend(j)
+            else
+                legend_loc = oplegend(j)
+            endif
+        enddo
+    endif
+
+    ! ---------------- !
+    ! default oplegend !
+    ! ---------------- !
+
+    if (.not. allocated(legend_loc)) legend_loc = 'south east'
+    if (.not. allocated(legend_type)) legend_type = 'line'
+
+    ! ------------------- !
+    ! default oplinestyle !
+    ! ------------------- !
+
+    if (.not. allocated(oplinestyle)) then
+        allocate(oplinestyle(nj))
+        do j = 1, nj, 1
+            oplinestyle(j) = 'solid'
+        enddo
+    endif
+
+    ! --------------------------------------------------- !
+    ! if color not set by options, use palette and repeat !
+    ! --------------------------------------------------- !
+
+    if (.not. allocated(opcolor)) then
+        allocate(opcolor(nj))
+        do j = 1, nj, 1
+            i = mod(j, size(colorname))
+            i = merge(size(colorname), i, i .eq. 0)
+            opcolor(j) = colorname(i)
+        enddo
+    endif
 
     ! ------------------------------------- !
     ! thread safe external file unit number !
     ! ------------------------------------- !
-
-    !write(tmpChar5,'(i0)') omp_get_thread_num()
-    !unitno = 726+omp_get_thread_num()
 
     !Suggestion from fortran-lang to remove strong dependency on openmp:
     !https://fortran-lang.discourse.group/t/using-tikz-to-plot-for-fortran/8166/13?u=fish830911
@@ -186,21 +268,24 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     yticsdist = (ymax - ymin) / 12.0_wp
 
     call write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xticsdist, yticsdist, &
-        colorvec, colorname, title, xlabel, ylabel, legendvec)
+        colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, opcolor, oplinestyle)
 
     call typeset(fpath, fname, tikz, .true.)
 
 end subroutine tikz_plot_xy2
 
 subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xticsdist, yticsdist, &
-        colorvec, colorname, title, xlb, ylb, legendvec)
+        colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, opcolor, oplinestyle)
 
     integer, intent(in) :: unitno, nj
     character(len=*), intent(in) :: fpath, tikz, dat
     character(len=*), intent(in) :: title, xlb, ylb
     character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
     character(len=30), dimension(:), intent(in) :: legendvec
+    character(len=*), intent(in) :: legend_type, legend_loc
+    character(len=*), dimension(:), intent(in) :: opcolor, oplinestyle
     real(wp), intent(in) :: xmin, xmax, ymin, ymax, xticsdist, yticsdist
+    integer :: j
 
     open(unitno, file=trim(fpath) // trim(tikz),status='unknown')
        write(unitno, *) "\documentclass[tikz]{standalone}"
@@ -261,6 +346,10 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
        write(unitno, *) "}"
        write(unitno, *) "% ---------------------------------------------------------------------"
        write(unitno, *) ""
+       do j = 1, size(colorvec), 1
+           write(unitno, *) "\definecolor{" // trim(colorname(j)) // "}{HTML}{" // trim(colorvec(j)) // "}"
+       enddo
+       write(unitno, *) ""
        write(unitno, *) "\begin{document}"
        write(unitno, *) ""
        write(unitno, *) "\begin{tikzpicture}"
@@ -275,11 +364,11 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
        write(unitno, *) "    ymin = " // num2str(ymin) // ","
        write(unitno, *) "    ymax = " // num2str(ymax) // ","
        write(unitno, *) "    legend cell align = left,"
-       write(unitno, *) "    legend pos = south east,"
+       write(unitno, *) "    legend pos = " // legend_loc // ","
        write(unitno, *) "    title = {" // title // "}]"
        write(unitno, *) ""
        write(unitno, *) ""
-       call plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec)
+       call plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, legend_type, opcolor, oplinestyle)
        write(unitno, *) ""
        write(unitno, *) ""
        write(unitno, *) "\end{axis}"
@@ -293,20 +382,30 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
 
 end subroutine write_tikz
 
-subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec)
+subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, legend_type, opcolor, oplinestyle)
     integer, intent(in) :: unitno, nj
     character(len=*), intent(in) :: fpath, dat
     character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
+    character(len=*), dimension(:), intent(in) :: opcolor, oplinestyle
     character(len=30), dimension(:), intent(in) :: legendvec
+    character(len=*), intent(in) :: legend_type
 
-    integer :: i
+    integer :: j
 
-    do i = 1, nj, 1
-        write(unitno, *) "\definecolor{" // trim(colorname(i)) // "}{HTML}{" // trim(colorvec(i)) // "}"
-        write(unitno, *) "\addplot[name path = " // num2str(i) // &
-            ", thick, color=" // trim(colorname(i)) // &
-            "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(i) // &
-            "}]{" // dat // "} node[" // trim(colorname(i)) // ", pos=0.5, above, Sloped]{" // trim(legendvec(i)) // "};"
+    do j = 1, nj, 1
+        select case (trim(legend_type))
+        case ('line')
+            write(unitno, *) "\addplot[name path = " // num2str(j) // &
+                ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
+                "}]{" // dat // "} node[" // trim(opcolor(j)) // ", pos=0.5, above, Sloped]{" // trim(legendvec(j)) // "};"
+        case ('box')
+            write(unitno, *) "\addplot[name path = " // num2str(j) // &
+                ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
+                "}]{" // dat // "};"
+            write(unitno, *) "\addlegendentry{" // trim(legendvec(j)) // "}"
+        end select
     enddo
 
 end subroutine plotting
@@ -385,6 +484,19 @@ function decompose_str(str, chloc) result(strvec)
     enddo
 
 end function decompose_str
+
+!function paired_str(str, delim1, delim2) result(pairvec)
+!
+!    character(len=*), intent(in) :: str, delim1, delim2
+!    character(len=len_trim(str)), dimension(:, :), allocatable :: strvec
+!    character(len=len_trim(str)), dimension(:), allocatable :: tmp
+!
+!
+!    tmp = decompose_str(str, genLoc(str, delim1))
+!
+!
+!
+!end function paired_str
 
 ! -------------------------------------------------------- !
 ! generate an integer array chloc to record the appearance !
@@ -543,36 +655,6 @@ subroutine typeset(fpath, fname, tikz, isSaveFile)
         '[ -f ' // trim(fpath) // trim(fname) // '.synctex.gz'             // ' ] && rm ' // trim(fpath) // trim(fname) // '.synctex.gz;' // &
         '[ -f ' // trim(fpath) // trim(fname) // '.blg'                    // ' ] && rm ' // trim(fpath) // trim(fname) // '.blg;' // &
         '[ -f ' // trim(fpath) // trim(fname) // '.bbl'                    // ' ] && rm ' // trim(fpath) // trim(fname) // '.bbl;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.aux'         // ' ] && rm ' // trim(fname) // '_plot' // '.aux;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.log'         // ' ] && rm ' // trim(fname) // '_plot' // '.log;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.4tc'         // ' ] && rm ' // trim(fname) // '_plot' // '.4tc;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.xref'        // ' ] && rm ' // trim(fname) // '_plot' // '.xref;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.tmp'         // ' ] && rm ' // trim(fname) // '_plot' // '.tmp;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.pyc'         // ' ] && rm ' // trim(fname) // '_plot' // '.pyc;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.pyg'         // ' ] && rm ' // trim(fname) // '_plot' // '.pyg;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.pyo'         // ' ] && rm ' // trim(fname) // '_plot' // '.pyo;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.fls'         // ' ] && rm ' // trim(fname) // '_plot' // '.fls;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.vrb'         // ' ] && rm ' // trim(fname) // '_plot' // '.vrb;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.fdb_latexmk' // ' ] && rm ' // trim(fname) // '_plot' // '.fdb_latexmk;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.bak'         // ' ] && rm ' // trim(fname) // '_plot' // '.bak;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.swp'         // ' ] && rm ' // trim(fname) // '_plot' // '.swp;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.aux'         // ' ] && rm ' // trim(fname) // '_plot' // '.aux;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.log'         // ' ] && rm ' // trim(fname) // '_plot' // '.log;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.lof'         // ' ] && rm ' // trim(fname) // '_plot' // '.lof;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.lot'         // ' ] && rm ' // trim(fname) // '_plot' // '.lot;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.maf'         // ' ] && rm ' // trim(fname) // '_plot' // '.maf;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.idx'         // ' ] && rm ' // trim(fname) // '_plot' // '.idx;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.mtc'         // ' ] && rm ' // trim(fname) // '_plot' // '.mtc;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.mtc0'        // ' ] && rm ' // trim(fname) // '_plot' // '.mtc0;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.nav'         // ' ] && rm ' // trim(fname) // '_plot' // '.nav;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.out'         // ' ] && rm ' // trim(fname) // '_plot' // '.out;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.snm'         // ' ] && rm ' // trim(fname) // '_plot' // '.snm;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.toc'         // ' ] && rm ' // trim(fname) // '_plot' // '.toc;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.bcf'         // ' ] && rm ' // trim(fname) // '_plot' // '.bcf;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.run.xml'     // ' ] && rm ' // trim(fname) // '_plot' // '.run.xml;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.synctex.gz'  // ' ] && rm ' // trim(fname) // '_plot' // '.synctex.gz;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.blg'         // ' ] && rm ' // trim(fname) // '_plot' // '.blg;' // &
-        '[ -f ' // trim(fname) // '_plot' // '.bbl'         // ' ] && rm ' // trim(fname) // '_plot' // '.bbl;' // &
         'cd "$cwd"',exitstat=ierr)
 
 
