@@ -1,0 +1,101 @@
+ \documentclass[tikz]{standalone}
+ \usepackage{tikz}
+ \usepackage{pgfplots}
+ \usetikzlibrary{decorations}
+ \usetikzlibrary{decorations.pathreplacing, intersections, fillbetween}
+ \usetikzlibrary{calc,positioning}
+ \pgfplotsset{compat=newest, scale only axis, width = 13cm, height = 6cm}
+ \pgfplotsset{sciclean/.style={axis lines=left,
+         axis x line shift=0.5em,
+         axis y line shift=0.5em,
+         axis line style={-,very thin},
+         axis background/.style={draw,ultra thin,gray},
+         tick align=outside,
+         xtick distance=1.6666666666666667,
+         ytick distance=1.6666666666666667,
+         xticklabel style={
+             /pgf/number format/fixed,
+             /pgf/number format/precision=2
+         },
+         yticklabel style={
+             /pgf/number format/fixed,
+             /pgf/number format/precision=2
+         },
+         scaled y ticks=false,
+         major tick length=2pt}}
+ 
+ % Create fake \onslide and other commands for standalone picture
+ \usepackage{xparse}
+ \NewDocumentCommand{\onslide}{s t+ d<>}{}
+ \NewDocumentCommand{\only}{d<>}{}
+ \NewDocumentCommand{\uncover}{d<>}{}
+ \NewDocumentCommand{\visible}{d<>}{}
+ \NewDocumentCommand{\invisible}{d<>}{}
+ 
+ \makeatletter
+ \tikzset{
+ Sloped/.code = {
+ \iftikz@fullytransformed% tikz.code.tex
+     \tikzset{sloped}
+ \else
+     \pgfgettransformentries{\mya}{\myb}{\myc}{\myd}{\mys}{\myt}%
+     \tikzset{sloped, transform shape, rotate = {atan2(\myb,\mya)}}%
+ \fi
+ }
+ }
+ \makeatother
+ 
+ % ---------------------------------------------------------------------
+ % Coordinate extraction
+ % #1: node name
+ % #2: output macro name: x coordinate
+ % #3: output macro name: y coordinate
+ \newcommand{\Getxycoords}[3]{%
+     \pgfplotsextra{%
+         % using `\pgfplotspointgetcoordinates' stores the (axis)
+         % coordinates in `data point' which then can be called by
+         % `\pgfkeysvalueof' or `\pgfkeysgetvalue'
+         \pgfplotspointgetcoordinates{(#1)}%
+         % `\global' (a TeX macro and not a TikZ/PGFPlots one) allows to
+         % store the values globally
+          \global\pgfkeysgetvalue{/data point/x}{#2}%
+          \global\pgfkeysgetvalue{/data point/y}{#3}%
+      }%
+ }
+ % ---------------------------------------------------------------------
+ 
+ \definecolor{blue}{HTML}{0072BD}
+ \definecolor{orange}{HTML}{D95319}
+ \definecolor{yellow}{HTML}{EDB120}
+ \definecolor{purple}{HTML}{7E2F8E}
+ \definecolor{green}{HTML}{77AC30}
+ \definecolor{light-blue}{HTML}{4DBEEE}
+ \definecolor{red}{HTML}{A2142F}
+ 
+ \begin{document}
+ 
+ \begin{tikzpicture}
+ 
+ 
+ \begin{axis}[
+     sciclean,
+     xlabel = {$x$},
+     ylabel = {$y$},
+     xmin = 5.0000000000000000,
+     xmax = 25.000000000000000,
+     ymin = 5.0000000000000000,
+     ymax = 25.000000000000000,
+     legend cell align = left,
+     legend pos = south east,
+     title = {}]
+ 
+ 
+ \addplot[name path = 1, thick, solid, color=blue] table [x expr=\thisrowno{0}, y expr=\thisrowno{1}]{tikzplot_1_le.dat} node[blue, pos=0.5, above, Sloped]{Example};
+ 
+ 
+ \end{axis}
+ 
+ 
+ \end{tikzpicture}
+ 
+ \end{document}

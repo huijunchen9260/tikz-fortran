@@ -9,10 +9,19 @@ use, intrinsic :: iso_Fortran_env, only : wp => real64, int32, int64, real32, re
 !use omp_lib
 !Suggestion from fortran-lang to remove strong dependency on openmp:
 !https://fortran-lang.discourse.group/t/using-tikz-to-plot-for-fortran/8166/13?u=fish830911
-!$ omp_lib
+!$omp_lib
 implicit none
 private
 public :: tikz
+
+integer, parameter :: OS_UNKNOWN = 0
+integer, parameter :: OS_LINUX   = 1
+integer, parameter :: OS_MACOS   = 2
+integer, parameter :: OS_WINDOWS = 3
+integer, parameter :: OS_CYGWIN  = 4
+integer, parameter :: OS_SOLARIS = 5
+integer, parameter :: OS_FREEBSD = 6
+integer, parameter :: OS_OPENBSD = 7
 
 interface tikz
     module procedure tikz_plot_y, tikz_plot_y2, tikz_plot_xy, tikz_plot_xy2
@@ -26,6 +35,8 @@ interface num2str
     module procedure num2str_real32
     module procedure num2str_real64
 end interface num2str
+
+character(len=255) :: opener
 
 contains
 
@@ -84,11 +95,12 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     real(wp) :: xticsdist, yticsdist                                ! tics distances
     character(len=:), allocatable :: palette                        ! color palette
     character(len=:), allocatable :: cnames                         ! names of the color palette
-    character(len=:), dimension(:), allocatable :: colorvec, colorname, optionvec
+    character(len=:), allocatable :: styleset                       ! line style sets
+    character(len=:), dimension(:), allocatable :: colorvec, colorname, optionvec, stylevec
     character(len=:), dimension(:), allocatable :: optmp
-    character(len=30), dimension(:), allocatable :: opcolor, oplinestyle, oplegend
+    character(len=30), dimension(:), allocatable :: legendvec, opcolor, oplinestyle, oplegend
     character(len=:), allocatable :: legend_type, legend_loc
-    character(len=30), dimension(size(y, 2)) :: legendvec
+    logical :: isTmp
 
     ! ---------------------- !
     ! Check inputs dimension !
@@ -118,7 +130,11 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     if (present(legend)) then
         le = legend
         legendvec = decompose_str(le, genLoc(le, ';'))
+        if (size(legendvec) .ne. nj) then
+            error stop "legend error: numbers of legends does not equal to numbers of columns on y"
+        endif
     else
+        allocate(legendvec(nj))
         do j = 1, nj, 1
             legendvec(j) = "data" // num2str(j)
         enddo
@@ -142,6 +158,28 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
     colorvec = decompose_str(palette, genLoc(palette, ';'))
     colorname = decompose_str(cnames, genLoc(cnames, ';'))
+
+    ! ------------------ !
+    ! Default line style !
+    ! ------------------ !
+
+    styleset = 'solid; ' // &
+               'dashdotdotted; ' // &
+               'densely dashdotdotted; ' // &
+               'densely dotted; ' // &
+               'densely dashed; ' // &
+               'dotted; ' // &
+               'dashed; ' // &
+               'loosely dotted; ' // &
+               'loosely dashed; ' // &
+               'dashdotted; ' // &
+               'densely dashdotted; ' // &
+               'loosely dashdotted; ' // &
+               'loosely dashdotdotted '
+
+    stylevec = decompose_str(styleset, genLoc(styleset, ';'))
+
+    call set_opener()
 
     ! ----------------- !
     ! Decompose options !
@@ -178,7 +216,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
                     endif
             end select
             deallocate(optmp)
-        enddo
+       enddo
     endif
 
     ! ------------------------------------- !
@@ -209,7 +247,9 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     if (.not. allocated(oplinestyle)) then
         allocate(oplinestyle(nj))
         do j = 1, nj, 1
-            oplinestyle(j) = 'solid'
+            i = mod(j, size(stylevec))
+            i = merge(size(stylevec), i, i .eq. 0)
+            oplinestyle(j) = stylevec(i)
         enddo
     endif
 
@@ -233,7 +273,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     !Suggestion from fortran-lang to remove strong dependency on openmp:
     !https://fortran-lang.discourse.group/t/using-tikz-to-plot-for-fortran/8166/13?u=fish830911
     thread_id = 0
-    !$ thread_id = omp_get_thread_num()
+    !$thread_id = omp_get_thread_num()
     write(tmpChar5,'(i0)') thread_id
     unitno = 726+thread_id
 
@@ -245,12 +285,14 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
         call decompose_name(fname, fpath, ftype, name)
         dat = trim(fname) // '.dat'
         tikz = trim(fname) // '.tex'
+        isTmp = .false.
     else
         fpath = './'
         fname = 'tikzplot' // trim(tmpChar5)
         ftype = ''
         dat = 'tikzdata' // trim(tmpChar5) // '.dat'
         tikz = 'tikzplot' // trim(tmpChar5) // '.tex'
+        isTmp = .true.
     endif
 
     ! ------------------ !
@@ -272,6 +314,18 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
     call typeset(fpath, fname, tikz, .true.)
 
+    if (isTmp) then
+        call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1;')
+    else
+        call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1 &')
+    endif
+
+    if (isTmp) call execute_command_line(&
+        'rm ' // trim(fpath) // trim(fname) // '.pdf; ' // &
+        'rm ' // trim(fpath) // trim(tikz) // '; ' // &
+        'rm ' // trim(fpath) // trim(dat) // '; ')
+
+
 end subroutine tikz_plot_xy2
 
 subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xticsdist, yticsdist, &
@@ -281,11 +335,11 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
     character(len=*), intent(in) :: fpath, tikz, dat
     character(len=*), intent(in) :: title, xlb, ylb
     character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
-    character(len=30), dimension(:), intent(in) :: legendvec
     character(len=*), intent(in) :: legend_type, legend_loc
-    character(len=*), dimension(:), intent(in) :: opcolor, oplinestyle
+    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle
     real(wp), intent(in) :: xmin, xmax, ymin, ymax, xticsdist, yticsdist
     integer :: j
+
 
     open(unitno, file=trim(fpath) // trim(tikz),status='unknown')
        write(unitno, *) "\documentclass[tikz]{standalone}"
@@ -304,6 +358,15 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
        write(unitno, *) "        tick align=outside,"
        write(unitno, *) "        xtick distance=" // num2str(xticsdist) // ","
        write(unitno, *) "        ytick distance=" // num2str(yticsdist) // ","
+       write(unitno, *) "        xticklabel style={"
+       write(unitno, *) "            /pgf/number format/fixed,"
+       write(unitno, *) "            /pgf/number format/precision=2"
+       write(unitno, *) "        },"
+       write(unitno, *) "        yticklabel style={"
+       write(unitno, *) "            /pgf/number format/fixed,"
+       write(unitno, *) "            /pgf/number format/precision=2"
+       write(unitno, *) "        },"
+       write(unitno, *) "        scaled y ticks=false,"
        write(unitno, *) "        major tick length=2pt}}"
        write(unitno, *) ""
        write(unitno, *) "% Create fake \onslide and other commands for standalone picture"
@@ -386,8 +449,7 @@ subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, lege
     integer, intent(in) :: unitno, nj
     character(len=*), intent(in) :: fpath, dat
     character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
-    character(len=*), dimension(:), intent(in) :: opcolor, oplinestyle
-    character(len=30), dimension(:), intent(in) :: legendvec
+    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle
     character(len=*), intent(in) :: legend_type
 
     integer :: j
@@ -618,12 +680,18 @@ subroutine typeset(fpath, fname, tikz, isSaveFile)
     character(len=:), allocatable :: plotfile
     integer :: unitno, ierr
 
+    write(*, *) trim(fpath) // trim(fname)
+
     call execute_command_line('cwd=$PWD; cd ' // trim(fpath) // &
         '; pdflatex ' // trim(tikz) // ' > /dev/null 2>&1; cd "$cwd"',exitstat=ierr)
 
+    !! debug
+    !call execute_command_line('cwd=$PWD; cd ' // trim(fpath) // &
+    !    '; pdflatex ' // trim(tikz) // '; cd "$cwd"',exitstat=ierr)
+
     if (ierr/=0) print*,'sub_plot_x_y2: WARNING: error in calling gnuplot'
 
-    call execute_command_line('cwd=$PWD; cd ' // trim(fpath) // '; ' // &
+    call execute_command_line('cwd=$PWD; ' // &
         '[ -f ' // trim(fpath) // trim(fname) // '-eps-converted-to.pdf'   // ' ] && rm ' // trim(fpath) // trim(fname) // '-eps-converted-to.pdf;' // &
         '[ -f ' // trim(fpath) // trim(fname) // '.aux'                    // ' ] && rm ' // trim(fpath) // trim(fname) // '.aux;' // &
         '[ -f ' // trim(fpath) // trim(fname) // '.log'                    // ' ] && rm ' // trim(fpath) // trim(fname) // '.log;' // &
@@ -660,6 +728,142 @@ subroutine typeset(fpath, fname, tikz, isSaveFile)
 
 
 end subroutine typeset
+
+subroutine set_opener
+
+    integer :: OS
+
+    OS = get_os_type()
+
+    select case (OS)
+        case (OS_UNKNOWN)
+            opener = 'xdg-open'
+        case (OS_LINUX)
+            opener = 'xdg-open'
+        case (OS_MACOS)
+            opener = 'open'
+    end select
+
+end subroutine set_opener
+
+!! Source: fpm
+integer function get_os_type() result(r)
+    !!
+    !! Returns one of OS_UNKNOWN, OS_LINUX, OS_MACOS, OS_WINDOWS, OS_CYGWIN,
+    !! OS_SOLARIS, OS_FREEBSD, OS_OPENBSD.
+    !!
+    !! At first, the environment variable `OS` is checked, which is usually
+    !! found on Windows. Then, `OSTYPE` is read in and compared with common
+    !! names. If this fails too, check the existence of files that can be
+    !! found on specific system types only.
+    !!
+    !! Returns OS_UNKNOWN if the operating system cannot be determined.
+    character(len=255) :: val
+    integer            :: length, rc
+    logical            :: file_exists
+    logical, save      :: first_run = .true.
+    integer, save      :: ret = OS_UNKNOWN
+    !$omp threadprivate(ret, first_run)
+
+    if (.not. first_run) then
+        r = ret
+        return
+    end if
+
+    first_run = .false.
+    r = OS_UNKNOWN
+
+    ! Check environment variable `OSTYPE`.
+    call get_environment_variable('OSTYPE', val, length, rc)
+
+    if (rc == 0 .and. length > 0) then
+        ! Linux
+        if (index(val, 'linux') > 0) then
+            r = OS_LINUX
+            ret = r
+            return
+        end if
+
+        ! macOS
+        if (index(val, 'darwin') > 0) then
+            r = OS_MACOS
+            ret = r
+            return
+        end if
+
+        ! Windows, MSYS, MinGW, Git Bash
+        if (index(val, 'win') > 0 .or. index(val, 'msys') > 0) then
+            r = OS_WINDOWS
+            ret = r
+            return
+        end if
+
+        ! Cygwin
+        if (index(val, 'cygwin') > 0) then
+            r = OS_CYGWIN
+            ret = r
+            return
+        end if
+
+        ! Solaris, OpenIndiana, ...
+        if (index(val, 'SunOS') > 0 .or. index(val, 'solaris') > 0) then
+            r = OS_SOLARIS
+            ret = r
+            return
+        end if
+
+        ! FreeBSD
+        if (index(val, 'FreeBSD') > 0 .or. index(val, 'freebsd') > 0) then
+            r = OS_FREEBSD
+            ret = r
+            return
+        end if
+
+        ! OpenBSD
+        if (index(val, 'OpenBSD') > 0 .or. index(val, 'openbsd') > 0) then
+            r = OS_OPENBSD
+            ret = r
+            return
+        end if
+    end if
+
+    ! Check environment variable `OS`.
+    call get_environment_variable('OS', val, length, rc)
+
+    if (rc == 0 .and. length > 0 .and. index(val, 'Windows_NT') > 0) then
+        r = OS_WINDOWS
+        ret = r
+        return
+    end if
+
+    ! Linux
+    inquire (file='/etc/os-release', exist=file_exists)
+
+    if (file_exists) then
+        r = OS_LINUX
+        ret = r
+        return
+    end if
+
+    ! macOS
+    inquire (file='/usr/bin/sw_vers', exist=file_exists)
+
+    if (file_exists) then
+        r = OS_MACOS
+        ret = r
+        return
+    end if
+
+    ! FreeBSD
+    inquire (file='/bin/freebsd-version', exist=file_exists)
+
+    if (file_exists) then
+        r = OS_FREEBSD
+        ret = r
+        return
+    end if
+end function get_os_type
+
 
 
 end module tikz_module

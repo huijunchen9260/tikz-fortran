@@ -58,7 +58,7 @@ Now it supports:
     - legend type: `line` or `box`, `line` means legend on the line, `box` means traditional legend
     - legend location: see [84.9.5 Legend Placement: Inside to the Data Visualization](https://tikz.dev/dv-stylesheets#sec-84.9.5)
 - `color` or `c`: color of each line
-- `linestyle` or `ls`: line style of each line
+- `linestyle` or `ls`: line style of each line, see [4.7.2Line Styles](https://tikz.dev/pgfplots/reference-markers#sec-4.7.2) for more detail
 
 Examples:
 
