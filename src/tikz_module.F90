@@ -96,9 +96,12 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     character(len=:), allocatable :: palette                        ! color palette
     character(len=:), allocatable :: cnames                         ! names of the color palette
     character(len=:), allocatable :: styleset                       ! line style sets
+    character(len=:), allocatable :: markerset                      ! marker style sets
     character(len=:), dimension(:), allocatable :: colorvec, colorname, optionvec, stylevec
+    character(len=:), dimension(:), allocatable :: markervec
     character(len=:), dimension(:), allocatable :: optmp
     character(len=30), dimension(:), allocatable :: legendvec, opcolor, oplinestyle, oplegend
+    character(len=30), dimension(:), allocatable :: opmarker
     character(len=:), allocatable :: legend_type, legend_loc
     logical :: isTmp
 
@@ -179,6 +182,21 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
     stylevec = decompose_str(styleset, genLoc(styleset, ';'))
 
+    ! ------------------ !
+    ! Default marker set !
+    ! ------------------ !
+
+    markerset = 'x;' // &
+                'o; ' // &
+                'star;' // &
+                'square;' // &
+                'triangle;' // &
+                'diamond;' // &
+                'pentagon;' // &
+                'asterisk'
+
+    markervec = decompose_str(markerset, genLoc(markerset, ';'))
+
     call set_opener()
 
     ! ----------------- !
@@ -197,22 +215,27 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
                 case ('color')
                     opcolor = decompose_str(optmp(2),  genLoc(optmp(2), ','))
                     if (size(opcolor) .ne. nj) then
-                        error stop "options error: numbers of color does not equal to numbers of columns on y"
+                        error stop "options error: numbers of color do not equal to numbers of columns on y"
                     endif
                 case ('c') ! shorthand for color
                     opcolor = decompose_str(optmp(2),  genLoc(optmp(2), ','))
                     if (size(opcolor) .ne. nj) then
-                        error stop "options error: numbers of color does not equal to numbers of columns on y"
+                        error stop "options error: numbers of color do not equal to numbers of columns on y"
                     endif
                 case ('linestyle')
                     oplinestyle = decompose_str(optmp(2),  genLoc(optmp(2), ','))
                     if (size(oplinestyle) .ne. nj) then
-                        error stop "options error: numbers of line style does not equal to numbers of columns on y"
+                        error stop "options error: numbers of line style do not equal to numbers of columns on y"
                     endif
                 case ('ls') ! shorthand for linestyle
                     oplinestyle = decompose_str(optmp(2),  genLoc(optmp(2), ','))
                     if (size(oplinestyle) .ne. nj) then
-                        error stop "options error: numbers of line style does not equal to numbers of columns on y"
+                        error stop "options error: numbers of line style do not equal to numbers of columns on y"
+                    endif
+                case ('marker')
+                    opmarker = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                    if (size(opmarker) .ne. nj) then
+                        error stop "options error: numbers of marker do not equal to numbers of columns on y"
                     endif
             end select
             deallocate(optmp)
@@ -250,6 +273,19 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
             i = mod(j, size(stylevec))
             i = merge(size(stylevec), i, i .eq. 0)
             oplinestyle(j) = stylevec(i)
+        enddo
+    endif
+
+    ! ---------------- !
+    ! default opmarker !
+    ! ---------------- !
+
+    if (.not. allocated(opmarker)) then
+        allocate(opmarker(nj))
+        do j = 1, nj, 1
+            i = mod(j, size(markervec))
+            i = merge(size(markervec), i, i .eq. 0)
+            opmarker(j) = markervec(i)
         enddo
     endif
 
@@ -310,7 +346,8 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     yticsdist = (ymax - ymin) / 12.0_wp
 
     call write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xticsdist, yticsdist, &
-        colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, opcolor, oplinestyle)
+        colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+        opcolor, oplinestyle, opmarker)
 
     call typeset(fpath, fname, tikz, .true.)
 
@@ -329,14 +366,15 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 end subroutine tikz_plot_xy2
 
 subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xticsdist, yticsdist, &
-        colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, opcolor, oplinestyle)
+        colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+        opcolor, oplinestyle, opmarker)
 
     integer, intent(in) :: unitno, nj
     character(len=*), intent(in) :: fpath, tikz, dat
     character(len=*), intent(in) :: title, xlb, ylb
     character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
     character(len=*), intent(in) :: legend_type, legend_loc
-    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle
+    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle, opmarker
     real(wp), intent(in) :: xmin, xmax, ymin, ymax, xticsdist, yticsdist
     integer :: j
 
@@ -349,6 +387,7 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
        write(unitno, *) "\usetikzlibrary{decorations}"
        write(unitno, *) "\usetikzlibrary{decorations.pathreplacing, intersections, fillbetween}"
        write(unitno, *) "\usetikzlibrary{calc,positioning}"
+       write(unitno, *) "\usetikzlibrary{plotmarks}"
        write(unitno, *) "\pgfplotsset{compat=newest, scale only axis, width = 13cm, height = 6cm}"
        write(unitno, *) "\pgfplotsset{sciclean/.style={axis lines=left,"
        write(unitno, *) "        axis x line shift=0.5em,"
@@ -431,7 +470,8 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
        write(unitno, *) "    title = {" // title // "}]"
        write(unitno, *) ""
        write(unitno, *) ""
-       call plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, legend_type, opcolor, oplinestyle)
+       call plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, &
+           legend_type, opcolor, oplinestyle, opmarker)
        write(unitno, *) ""
        write(unitno, *) ""
        write(unitno, *) "\end{axis}"
@@ -445,11 +485,12 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
 
 end subroutine write_tikz
 
-subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, legend_type, opcolor, oplinestyle)
+subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, legend_type, &
+        opcolor, oplinestyle, opmarker)
     integer, intent(in) :: unitno, nj
     character(len=*), intent(in) :: fpath, dat
     character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
-    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle
+    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle, opmarker
     character(len=*), intent(in) :: legend_type
 
     integer :: j
@@ -459,11 +500,13 @@ subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, lege
         case ('line')
             write(unitno, *) "\addplot[name path = " // num2str(j) // &
                 ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                ", mark=" // trim(opmarker(j)) // &
                 "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
                 "}]{" // dat // "} node[" // trim(opcolor(j)) // ", pos=0.5, above, Sloped]{" // trim(legendvec(j)) // "};"
         case ('box')
             write(unitno, *) "\addplot[name path = " // num2str(j) // &
                 ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                ", mark=" // trim(opmarker(j)) // &
                 "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
                 "}]{" // dat // "};"
             write(unitno, *) "\addlegendentry{" // trim(legendvec(j)) // "}"

@@ -4,6 +4,7 @@
  \usetikzlibrary{decorations}
  \usetikzlibrary{decorations.pathreplacing, intersections, fillbetween}
  \usetikzlibrary{calc,positioning}
+ \usetikzlibrary{plotmarks}
  \pgfplotsset{compat=newest, scale only axis, width = 13cm, height = 6cm}
  \pgfplotsset{sciclean/.style={axis lines=left,
          axis x line shift=0.5em,
@@ -90,10 +91,10 @@
      title = {}]
  
  
- \addplot[name path = 1, thick, solid, color=blue] table [x expr=\thisrowno{0}, y expr=\thisrowno{1}]{tikzplot_4.dat} node[blue, pos=0.5, above, Sloped]{data1};
- \addplot[name path = 2, thick, dashdotdotted, color=orange] table [x expr=\thisrowno{0}, y expr=\thisrowno{2}]{tikzplot_4.dat} node[orange, pos=0.5, above, Sloped]{data2};
- \addplot[name path = 3, thick, densely dashdotdotted, color=yellow] table [x expr=\thisrowno{0}, y expr=\thisrowno{3}]{tikzplot_4.dat} node[yellow, pos=0.5, above, Sloped]{data3};
- \addplot[name path = 4, thick, densely dotted, color=purple] table [x expr=\thisrowno{0}, y expr=\thisrowno{4}]{tikzplot_4.dat} node[purple, pos=0.5, above, Sloped]{data4};
+ \addplot[name path = 1, thick, solid, color=blue, mark=x] table [x expr=\thisrowno{0}, y expr=\thisrowno{1}]{tikzplot_4.dat} node[blue, pos=0.5, above, Sloped]{data1};
+ \addplot[name path = 2, thick, dashdotdotted, color=orange, mark=o] table [x expr=\thisrowno{0}, y expr=\thisrowno{2}]{tikzplot_4.dat} node[orange, pos=0.5, above, Sloped]{data2};
+ \addplot[name path = 3, thick, densely dashdotdotted, color=yellow, mark=star] table [x expr=\thisrowno{0}, y expr=\thisrowno{3}]{tikzplot_4.dat} node[yellow, pos=0.5, above, Sloped]{data3};
+ \addplot[name path = 4, thick, densely dotted, color=purple, mark=square] table [x expr=\thisrowno{0}, y expr=\thisrowno{4}]{tikzplot_4.dat} node[purple, pos=0.5, above, Sloped]{data4};
  
  
  \end{axis}
