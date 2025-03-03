@@ -390,6 +390,8 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
        write(unitno, *) "\usetikzlibrary{plotmarks}"
        write(unitno, *) "\pgfplotsset{compat=newest, scale only axis, width = 13cm, height = 6cm}"
        write(unitno, *) "\pgfplotsset{sciclean/.style={axis lines=left,"
+       write(unitno, *) "        grid=both,"
+       write(unitno, *) "        major grid style={line width=.2pt,draw=gray!50, dashed},"
        write(unitno, *) "        axis x line shift=0.5em,"
        write(unitno, *) "        axis y line shift=0.5em,"
        write(unitno, *) "        axis line style={-,very thin},"
