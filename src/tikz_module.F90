@@ -92,7 +92,6 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     character(len=:), allocatable :: dat                            ! data file
     character(len=:), allocatable :: tikz                           ! plotting tex file
     real(wp) :: xmin, xmax, ymin, ymax                              ! boundary of the figure
-    real(wp) :: xticsdist, yticsdist                                ! tics distances
     character(len=:), allocatable :: palette                        ! color palette
     character(len=:), allocatable :: cnames                         ! names of the color palette
     character(len=:), allocatable :: styleset                       ! line style sets
@@ -100,8 +99,8 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     character(len=:), dimension(:), allocatable :: colorvec, colorname, optionvec, stylevec
     character(len=:), dimension(:), allocatable :: markervec
     character(len=:), dimension(:), allocatable :: optmp
-    character(len=30), dimension(:), allocatable :: legendvec, opcolor, oplinestyle, oplegend
-    character(len=30), dimension(:), allocatable :: opmarker
+    character(len=100), dimension(:), allocatable :: legendvec, opcolor, oplinestyle, oplegend
+    character(len=100), dimension(:), allocatable :: opmarker
     character(len=:), allocatable :: legend_type, legend_loc
     logical :: isTmp
 
@@ -186,9 +185,9 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     ! Default marker set !
     ! ------------------ !
 
-    markerset = 'x;' // &
-                'o; ' // &
-                'star;' // &
+    markerset = 'o; ' // &
+                'square;' // &
+                'pentagon;' // &
                 'square;' // &
                 'triangle;' // &
                 'diamond;' // &
@@ -234,9 +233,6 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
                     endif
                 case ('marker')
                     opmarker = decompose_str(optmp(2),  genLoc(optmp(2), ','))
-                    if (size(opmarker) .ne. nj) then
-                        error stop "options error: numbers of marker do not equal to numbers of columns on y"
-                    endif
             end select
             deallocate(optmp)
        enddo
@@ -281,6 +277,12 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     ! ---------------- !
 
     if (.not. allocated(opmarker)) then
+        allocate(opmarker(nj))
+        do j = 1, nj, 1
+            opmarker(j) = 'false'
+        enddo
+    else
+        deallocate(opmarker)
         allocate(opmarker(nj))
         do j = 1, nj, 1
             i = mod(j, size(markervec))
@@ -342,10 +344,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     ymin = minval(y)
     ymax = maxval(y)
 
-    xticsdist = (xmax - xmin) / 12.0_wp
-    yticsdist = (ymax - ymin) / 12.0_wp
-
-    call write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xticsdist, yticsdist, &
+    call write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
         colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
         opcolor, oplinestyle, opmarker)
 
@@ -365,7 +364,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
 end subroutine tikz_plot_xy2
 
-subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xticsdist, yticsdist, &
+subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
         colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
         opcolor, oplinestyle, opmarker)
 
@@ -375,9 +374,8 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
     character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
     character(len=*), intent(in) :: legend_type, legend_loc
     character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle, opmarker
-    real(wp), intent(in) :: xmin, xmax, ymin, ymax, xticsdist, yticsdist
+    real(wp), intent(in) :: xmin, xmax, ymin, ymax
     integer :: j
-
 
     open(unitno, file=trim(fpath) // trim(tikz),status='unknown')
        write(unitno, *) "\documentclass[tikz]{standalone}"
@@ -389,26 +387,26 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
        write(unitno, *) "\usetikzlibrary{calc,positioning}"
        write(unitno, *) "\usetikzlibrary{plotmarks}"
        write(unitno, *) "\pgfplotsset{compat=newest, scale only axis, width = 13cm, height = 6cm}"
-       write(unitno, *) "\pgfplotsset{sciclean/.style={axis lines=left,"
-       write(unitno, *) "        grid=both,"
-       write(unitno, *) "        major grid style={line width=.2pt,draw=gray!50, dashed},"
-       write(unitno, *) "        axis x line shift=0.5em,"
-       write(unitno, *) "        axis y line shift=0.5em,"
-       write(unitno, *) "        axis line style={-,very thin},"
-       write(unitno, *) "        axis background/.style={draw,ultra thin,gray},"
-       write(unitno, *) "        tick align=outside,"
-       write(unitno, *) "        xtick distance=" // num2str(xticsdist) // ","
-       write(unitno, *) "        ytick distance=" // num2str(yticsdist) // ","
-       write(unitno, *) "        xticklabel style={"
-       write(unitno, *) "            /pgf/number format/fixed,"
-       write(unitno, *) "            /pgf/number format/precision=2"
-       write(unitno, *) "        },"
-       write(unitno, *) "        yticklabel style={"
-       write(unitno, *) "            /pgf/number format/fixed,"
-       write(unitno, *) "            /pgf/number format/precision=2"
-       write(unitno, *) "        },"
-       write(unitno, *) "        scaled y ticks=false,"
-       write(unitno, *) "        major tick length=2pt}}"
+       !write(unitno, *) "\pgfplotsset{sciclean/.style={axis lines=left,"
+       !write(unitno, *) "        grid=both,"
+       !write(unitno, *) "        major grid style={line width=.2pt,draw=gray!50, dashed},"
+       !write(unitno, *) "        axis x line shift=0.5em,"
+       !write(unitno, *) "        axis y line shift=0.5em,"
+       !write(unitno, *) "        axis line style={-,very thin},"
+       !write(unitno, *) "        axis background/.style={draw,ultra thin,gray},"
+       !write(unitno, *) "        tick align=outside,"
+       !write(unitno, *) "        xtick distance=" // num2str(xticsdist) // ","
+       !write(unitno, *) "        ytick distance=" // num2str(yticsdist) // ","
+       !write(unitno, *) "        xticklabel style={"
+       !write(unitno, *) "            /pgf/number format/fixed,"
+       !write(unitno, *) "            /pgf/number format/precision=2"
+       !write(unitno, *) "        },"
+       !write(unitno, *) "        yticklabel style={"
+       !write(unitno, *) "            /pgf/number format/fixed,"
+       !write(unitno, *) "            /pgf/number format/precision=2"
+       !write(unitno, *) "        },"
+       !write(unitno, *) "        scaled y ticks=false,"
+       !write(unitno, *) "        major tick length=2pt}}"
        write(unitno, *) ""
        write(unitno, *) "% Create fake \onslide and other commands for standalone picture"
        write(unitno, *) "\usepackage{xparse}"
@@ -418,6 +416,8 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
        write(unitno, *) "\NewDocumentCommand{\visible}{d<>}{}"
        write(unitno, *) "\NewDocumentCommand{\invisible}{d<>}{}"
        write(unitno, *) ""
+       write(unitno, *) "% ---------------------------------------------------------------------"
+       write(unitno, *) "% Create sloped legend on the data line"
        write(unitno, *) "\makeatletter"
        write(unitno, *) "\tikzset{"
        write(unitno, *) "Sloped/.code = {"
@@ -430,6 +430,7 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
        write(unitno, *) "}"
        write(unitno, *) "}"
        write(unitno, *) "\makeatother"
+       write(unitno, *) "% ---------------------------------------------------------------------"
        write(unitno, *) ""
        write(unitno, *) "% ---------------------------------------------------------------------"
        write(unitno, *) "% Coordinate extraction"
@@ -460,7 +461,24 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, xtic
        write(unitno, *) ""
        write(unitno, *) ""
        write(unitno, *) "\begin{axis}["
-       write(unitno, *) "    sciclean,"
+       write(unitno, *) "    axis lines=left,"
+       write(unitno, *) "    axis line style={-,very thin},"
+       write(unitno, *) "    axis background/.style={draw,ultra thin,gray},"
+       write(unitno, *) "    tick align=outside,"
+       write(unitno, *) "    grid=both,"
+       write(unitno, *) "    major grid style={line width=.2pt,draw=gray!50, dashed},"
+       write(unitno, *) "    axis x line shift=0.5em,"
+       write(unitno, *) "    axis y line shift=0.5em,"
+       write(unitno, *) "    xticklabel style={"
+       write(unitno, *) "        /pgf/number format/fixed,"
+       write(unitno, *) "        /pgf/number format/precision=2"
+       write(unitno, *) "    },"
+       write(unitno, *) "    yticklabel style={"
+       write(unitno, *) "        /pgf/number format/fixed,"
+       write(unitno, *) "        /pgf/number format/precision=2"
+       write(unitno, *) "    },"
+       write(unitno, *) "    scaled y ticks=false,"
+       write(unitno, *) "    major tick length=2pt,"
        write(unitno, *) "    xlabel = {" // xlb // "},"
        write(unitno, *) "    ylabel = {" // ylb // "},"
        write(unitno, *) "    xmin = " // num2str(xmin) // ","
@@ -500,18 +518,33 @@ subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, lege
     do j = 1, nj, 1
         select case (trim(legend_type))
         case ('line')
-            write(unitno, *) "\addplot[name path = " // num2str(j) // &
-                ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
-                ", mark=" // trim(opmarker(j)) // &
-                "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
-                "}]{" // dat // "} node[" // trim(opcolor(j)) // ", pos=0.5, above, Sloped]{" // trim(legendvec(j)) // "};"
+            if (opmarker(j) == 'false') then
+                write(unitno, *) "\addplot[name path = " // num2str(j) // &
+                    ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                    "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
+                    "}]{" // dat // "} node[" // trim(opcolor(j)) // ", pos=0.5, above, Sloped]{" // trim(legendvec(j)) // "};"
+            else
+                write(unitno, *) "\addplot[name path = " // num2str(j) // &
+                    ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                    ", mark=" // trim(opmarker(j)) // &
+                    "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
+                    "}]{" // dat // "} node[" // trim(opcolor(j)) // ", pos=0.5, above, Sloped]{" // trim(legendvec(j)) // "};"
+            endif
         case ('box')
-            write(unitno, *) "\addplot[name path = " // num2str(j) // &
-                ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
-                ", mark=" // trim(opmarker(j)) // &
-                "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
-                "}]{" // dat // "};"
-            write(unitno, *) "\addlegendentry{" // trim(legendvec(j)) // "}"
+            if (opmarker(j) == 'false') then
+                write(unitno, *) "\addplot[name path = " // num2str(j) // &
+                    ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                    "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
+                    "}]{" // dat // "};"
+                write(unitno, *) "\addlegendentry{" // trim(legendvec(j)) // "}"
+            else
+                write(unitno, *) "\addplot[name path = " // num2str(j) // &
+                    ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                    ", mark=" // trim(opmarker(j)) // &
+                    "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
+                    "}]{" // dat // "};"
+                write(unitno, *) "\addlegendentry{" // trim(legendvec(j)) // "}"
+            endif
         end select
     enddo
 
@@ -909,6 +942,80 @@ integer function get_os_type() result(r)
     end if
 end function get_os_type
 
+!subroutine meshgrid(x,y,xgv,ygv, ierr)
+!    !..............................................................................
+!    !meshgrid generate mesh grid over a rectangular domain of [xmin xmax, ymin, ymax]
+!    ! Inputs:
+!    !     xgv, ygv are grid vectors in form of full grid data
+!    ! Outputs:
+!    !     X and Y are matrix each of size [ny by nx] contains the grid data.
+!    !     The coordinates of point (i,j) is [X(i,j), Y(i,j)]
+!    !     ierr: The error flag
+!    !     """
+!    !     # Example
+!    !     # call meshgrid(X, Y, [0.,1.,2.,3.],[5.,6.,7.,8.])
+!    !     # X
+!    !     # [0.0, 1.0, 2.0, 3.0,
+!    !     #  0.0, 1.0, 2.0, 3.0,
+!    !     #  0.0, 1.0, 2.0, 3.0,
+!    !     #  0.0, 1.0, 2.0, 3.0]
+!    !     #
+!    !     #Y
+!    !     #[ 5.0, 5.0, 5.0, 5.0,
+!    !     #  6.0, 6.0, 6.0, 6.0,
+!    !     #  7.0, 7.0, 7.0, 7.0,
+!    !     #  8.0, 8.0, 8.0, 8.0]
+!    !..............................................................................
+!    ! Rev 0.2, Feb 2018
+!    ! New feature added: xgv and ygv as full grid vector are accepted now
+!
+!    ! Arguments
+!    real(wp), intent(out), allocatable  :: x(:,:)
+!    real(wp), intent(out), allocatable  :: y(:,:)
+!    real(wp), intent(in)                :: xgv(:) ! x grid vector [start, stop, step] or [start, stop]
+!    real(wp), intent(in),  optional     :: ygv(:) ! y grid vector [start, stop, step] or [start, stop]
+!    integer,  intent(out), optional     :: ierr   ! the error value
+!
+!    ! Local variables
+!    integer:: sv
+!    integer:: nx
+!    integer:: ny
+!    logical:: only_xgv_available
+!
+!    ! Initial setting
+!    only_xgv_available  = .false.
+!    sv=0 !Assume no error
+!
+!    nx=size(xgv, dim=1)
+!
+!    if (present(ygv)) then
+!        ny = size(ygv, dim=1)
+!    else
+!        only_xgv_available=.true.
+!        ny=nx
+!    end if
+!
+!    allocate(x(ny,nx),y(ny,nx),stat=sv)
+!    if (sv /=0) then
+!        print*, "allocataion erro in meshgrid"
+!        stop
+!    end if
+!
+!    x(1,:)    = xgv
+!    x(2:ny,:) = spread(xgv, dim=1, ncopies=ny-1)
+!
+!    if (only_xgv_available) then
+!        y=transpose(x)
+!    else
+!        y(:,1)    = ygv
+!        y(:,2:nx) = spread(ygv,dim=2,ncopies=nx-1)
+!    end if
+!
+!    if (present(ierr)) then
+!        ierr=sv
+!    end if
+!
+!end subroutine meshgrid
 
 
 end module tikz_module
