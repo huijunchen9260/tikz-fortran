@@ -47,4 +47,9 @@ program example
         options = 'color: gray, blue, orange, yellow; &
                   legend: box, north east')
 
+    !! example: plot 2D with marker
+    call tikz(x, y, name = './example/tikzplot_4_col_mark.tex', &
+        options = 'color: gray, blue, orange, yellow; &
+                  marker: true')
+
 end program example

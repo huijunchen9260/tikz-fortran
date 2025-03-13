@@ -6,24 +6,6 @@
  \usetikzlibrary{calc,positioning}
  \usetikzlibrary{plotmarks}
  \pgfplotsset{compat=newest, scale only axis, width = 13cm, height = 6cm}
- \pgfplotsset{sciclean/.style={axis lines=left,
-         axis x line shift=0.5em,
-         axis y line shift=0.5em,
-         axis line style={-,very thin},
-         axis background/.style={draw,ultra thin,gray},
-         tick align=outside,
-         xtick distance=0.33333333333333331,
-         ytick distance=0.58333333333333337,
-         xticklabel style={
-             /pgf/number format/fixed,
-             /pgf/number format/precision=2
-         },
-         yticklabel style={
-             /pgf/number format/fixed,
-             /pgf/number format/precision=2
-         },
-         scaled y ticks=false,
-         major tick length=2pt}}
  
  % Create fake \onslide and other commands for standalone picture
  \usepackage{xparse}
@@ -33,6 +15,8 @@
  \NewDocumentCommand{\visible}{d<>}{}
  \NewDocumentCommand{\invisible}{d<>}{}
  
+ % ---------------------------------------------------------------------
+ % Create sloped legend on the data line
  \makeatletter
  \tikzset{
  Sloped/.code = {
@@ -45,6 +29,7 @@
  }
  }
  \makeatother
+ % ---------------------------------------------------------------------
  
  % ---------------------------------------------------------------------
  % Coordinate extraction
@@ -79,7 +64,24 @@
  
  
  \begin{axis}[
-     sciclean,
+     axis lines=left,
+     axis line style={-,very thin},
+     axis background/.style={draw,ultra thin,gray},
+     tick align=outside,
+     grid=both,
+     major grid style={line width=.2pt,draw=gray!50, dashed},
+     axis x line shift=0.5em,
+     axis y line shift=0.5em,
+     xticklabel style={
+         /pgf/number format/fixed,
+         /pgf/number format/precision=2
+     },
+     yticklabel style={
+         /pgf/number format/fixed,
+         /pgf/number format/precision=2
+     },
+     scaled y ticks=false,
+     major tick length=2pt,
      xlabel = {$x$},
      ylabel = {$y$},
      xmin = 1.0000000000000000,
@@ -91,10 +93,10 @@
      title = {}]
  
  
- \addplot[name path = 1, thick, solid, color=blue, mark=x] table [x expr=\thisrowno{0}, y expr=\thisrowno{1}]{tikzplot_4.dat} node[blue, pos=0.5, above, Sloped]{data1};
- \addplot[name path = 2, thick, dashdotdotted, color=orange, mark=o] table [x expr=\thisrowno{0}, y expr=\thisrowno{2}]{tikzplot_4.dat} node[orange, pos=0.5, above, Sloped]{data2};
- \addplot[name path = 3, thick, densely dashdotdotted, color=yellow, mark=star] table [x expr=\thisrowno{0}, y expr=\thisrowno{3}]{tikzplot_4.dat} node[yellow, pos=0.5, above, Sloped]{data3};
- \addplot[name path = 4, thick, densely dotted, color=purple, mark=square] table [x expr=\thisrowno{0}, y expr=\thisrowno{4}]{tikzplot_4.dat} node[purple, pos=0.5, above, Sloped]{data4};
+ \addplot[name path = 1, thick, solid, color=blue] table [x expr=\thisrowno{0}, y expr=\thisrowno{1}]{tikzplot_4.dat} node[blue, pos=0.5, above, Sloped]{data1};
+ \addplot[name path = 2, thick, dashdotdotted, color=orange] table [x expr=\thisrowno{0}, y expr=\thisrowno{2}]{tikzplot_4.dat} node[orange, pos=0.5, above, Sloped]{data2};
+ \addplot[name path = 3, thick, densely dashdotdotted, color=yellow] table [x expr=\thisrowno{0}, y expr=\thisrowno{3}]{tikzplot_4.dat} node[yellow, pos=0.5, above, Sloped]{data3};
+ \addplot[name path = 4, thick, densely dotted, color=purple] table [x expr=\thisrowno{0}, y expr=\thisrowno{4}]{tikzplot_4.dat} node[purple, pos=0.5, above, Sloped]{data4};
  
  
  \end{axis}

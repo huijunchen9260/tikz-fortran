@@ -232,6 +232,8 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
                         error stop "options error: numbers of line style do not equal to numbers of columns on y"
                     endif
                 case ('marker')
+                    !! marker can be "true" to use default marker
+                    !! or specify marker used in each line.
                     opmarker = decompose_str(optmp(2),  genLoc(optmp(2), ','))
             end select
             deallocate(optmp)
@@ -245,9 +247,9 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     if (allocated(oplegend)) then
         do j = 1, size(oplegend), 1
             if (trim(oplegend(j)) == 'line' .or. trim(oplegend(j)) == 'box') then
-                legend_type = oplegend(j)
+                legend_type = trim(oplegend(j))
             else
-                legend_loc = oplegend(j)
+                legend_loc = trim(oplegend(j))
             endif
         enddo
     endif
@@ -272,9 +274,9 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
         enddo
     endif
 
-    ! ---------------- !
-    ! default opmarker !
-    ! ---------------- !
+    ! --------------------------- !
+    ! default opmarker: no marker !
+    ! --------------------------- !
 
     if (.not. allocated(opmarker)) then
         allocate(opmarker(nj))
@@ -282,13 +284,22 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
             opmarker(j) = 'false'
         enddo
     else
-        deallocate(opmarker)
-        allocate(opmarker(nj))
-        do j = 1, nj, 1
-            i = mod(j, size(markervec))
-            i = merge(size(markervec), i, i .eq. 0)
-            opmarker(j) = markervec(i)
-        enddo
+        !! if given optional marker,
+        !! whether it is set true to use default markervec,
+        !! or use supplied markervec
+        if (opmarker(1) == 'true') then
+            deallocate(opmarker)
+            allocate(opmarker(nj))
+            do j = 1, nj, 1
+                i = mod(j, size(markervec))
+                i = merge(size(markervec), i, i .eq. 0)
+                opmarker(j) = markervec(i)
+            enddo
+        else
+            if (size(opmarker) .ne. nj) then
+                error stop "options error: numbers of markers do not equal to numbers of columns on y"
+            endif
+        endif
     endif
 
     ! --------------------------------------------------- !

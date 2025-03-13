@@ -20,7 +20,8 @@ Simply copy and paste the `tikz_module.F90` into your project or library directo
 
 ## Usage
 
-Only support 2D plot for now.
+Only support 2D plots.
+See [pgfplots manual](https://tikz.dev/pgfplots/reference-3dplots#sec-4.6.1) for memory limitation on 3D plots.
 
 The full syntax is
 
@@ -48,7 +49,7 @@ call tikz(x, y)
 
 `options` are a `character` type that works to assign user-defined options to the generated tikz script.
 
-Each category (`legend`, `color`, etc) are separated by semicolor `;`, and each item under category is separated by comma `,`.
+Each category (`legend`, `color`, `marker`, etc) are separated by semicolor `;`, and each item under category is separated by comma `,`.
 
 The delimiter between category (e.g. `legend`) and items (e.g. `box, north east`) is colon `:`.
 
@@ -75,6 +76,10 @@ call tikz(x, y, name = 'tikzplot_4_le_box.tex', &
 call tikz(x, y, name = 'tikzplot_4_col_box.tex', &
     options = 'color: gray, blue, orange, yellow; &
               legend: box, north east')
+
+!! example: plot 2D with marker
+call tikz(x, y, name = './example/tikzplot_4_col_mark.tex', &
+    options = 'color: gray, blue, orange, yellow; marker: true')
 ```
 
 ## PGF/Tikz templated used
@@ -88,16 +93,8 @@ The `Sloped` section of template comes from [stack overflow](https://tex.stackex
 \usetikzlibrary{decorations}
 \usetikzlibrary{decorations.pathreplacing, intersections, fillbetween}
 \usetikzlibrary{calc,positioning}
+\usetikzlibrary{plotmarks}
 \pgfplotsset{compat=newest, scale only axis, width = 13cm, height = 6cm}
-\pgfplotsset{sciclean/.style={axis lines=left,
-        axis x line shift=0.5em,
-        axis y line shift=0.5em,
-        axis line style={-,very thin},
-        axis background/.style={draw,ultra thin,gray},
-        tick align=outside,
-        xtick distance=<assigned by tikz-fortran>,
-        ytick distance=<assigned by tikz-fortran>,
-        major tick length=2pt}}
 
 % Create fake \onslide and other commands for standalone picture
 \usepackage{xparse}
@@ -107,6 +104,8 @@ The `Sloped` section of template comes from [stack overflow](https://tex.stackex
 \NewDocumentCommand{\visible}{d<>}{}
 \NewDocumentCommand{\invisible}{d<>}{}
 
+% ---------------------------------------------------------------------
+% Create sloped legend on the data line
 \makeatletter
 \tikzset{
 Sloped/.code = {
@@ -119,6 +118,7 @@ Sloped/.code = {
 }
 }
 \makeatother
+% ---------------------------------------------------------------------
 
 % ---------------------------------------------------------------------
 % Coordinate extraction
@@ -139,13 +139,37 @@ Sloped/.code = {
 }
 % ---------------------------------------------------------------------
 
+\definecolor{blue}{HTML}{0072BD}
+\definecolor{orange}{HTML}{D95319}
+\definecolor{yellow}{HTML}{EDB120}
+\definecolor{purple}{HTML}{7E2F8E}
+\definecolor{green}{HTML}{77AC30}
+\definecolor{light-blue}{HTML}{4DBEEE}
+\definecolor{red}{HTML}{A2142F}
+
 \begin{document}
 
 \begin{tikzpicture}
 
-
 \begin{axis}[
-    sciclean,
+    axis lines=left,
+    axis line style={-,very thin},
+    axis background/.style={draw,ultra thin,gray},
+    tick align=outside,
+    grid=both,
+    major grid style={line width=.2pt,draw=gray!50, dashed},
+    axis x line shift=0.5em,
+    axis y line shift=0.5em,
+    xticklabel style={
+        /pgf/number format/fixed,
+        /pgf/number format/precision=2
+    },
+    yticklabel style={
+        /pgf/number format/fixed,
+        /pgf/number format/precision=2
+    },
+    scaled y ticks=false,
+    major tick length=2pt,
     xlabel = {<assigned by tikz-fortran>},
     ylabel = {<assigned by tikz-fortran>},
     xmin = <assigned by tikz-fortran>,
@@ -156,16 +180,26 @@ Sloped/.code = {
     legend pos = <assigned by tikz-fortran>,
     title = {<assigned by tikz-fortran>}]
 
-<plotting assigned by tikz-fortran>
+
+\addplot[name path = 1, thick, solid, color=blue] table [x expr=\thisrowno{0}, y expr=\thisrowno{1}]{tikzplot_4_le_box.dat};
+\addlegendentry{data1}
+\addplot[name path = 2, thick, dashdotdotted, color=orange] table [x expr=\thisrowno{0}, y expr=\thisrowno{2}]{tikzplot_4_le_box.dat};
+\addlegendentry{data2}
+\addplot[name path = 3, thick, densely dashdotdotted, color=yellow] table [x expr=\thisrowno{0}, y expr=\thisrowno{3}]{tikzplot_4_le_box.dat};
+\addlegendentry{data3}
+\addplot[name path = 4, thick, densely dotted, color=purple] table [x expr=\thisrowno{0}, y expr=\thisrowno{4}]{tikzplot_4_le_box.dat};
+\addlegendentry{data4}
+
 
 \end{axis}
+
 
 \end{tikzpicture}
 
 \end{document}
- ```
+```
 
 ## Example
 
-Run `fpm run --example` or `gfortran -o run src/tikz_module.F90 example/example.f90 && ./run ` to see example
+Run `fpm run --example` or `gfortran -o run src/tikz_module.F90 example/example.f90 && ./run ` to see examples.
 

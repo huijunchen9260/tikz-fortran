@@ -93,10 +93,10 @@
      title = {}]
  
  
- \addplot[name path = 1, thick, solid, color=gray] table [x expr=\thisrowno{0}, y expr=\thisrowno{1}]{tikzplot_4_col.dat} node[gray, pos=0.5, above, Sloped]{data1};
- \addplot[name path = 2, thick, dashdotdotted, color=blue] table [x expr=\thisrowno{0}, y expr=\thisrowno{2}]{tikzplot_4_col.dat} node[blue, pos=0.5, above, Sloped]{data2};
- \addplot[name path = 3, thick, densely dashdotdotted, color=orange] table [x expr=\thisrowno{0}, y expr=\thisrowno{3}]{tikzplot_4_col.dat} node[orange, pos=0.5, above, Sloped]{data3};
- \addplot[name path = 4, thick, densely dotted, color=yellow] table [x expr=\thisrowno{0}, y expr=\thisrowno{4}]{tikzplot_4_col.dat} node[yellow, pos=0.5, above, Sloped]{data4};
+ \addplot[name path = 1, thick, solid, color=gray, mark=o] table [x expr=\thisrowno{0}, y expr=\thisrowno{1}]{tikzplot_4_col_mark.dat} node[gray, pos=0.5, above, Sloped]{data1};
+ \addplot[name path = 2, thick, dashdotdotted, color=blue, mark=square] table [x expr=\thisrowno{0}, y expr=\thisrowno{2}]{tikzplot_4_col_mark.dat} node[blue, pos=0.5, above, Sloped]{data2};
+ \addplot[name path = 3, thick, densely dashdotdotted, color=orange, mark=pentagon] table [x expr=\thisrowno{0}, y expr=\thisrowno{3}]{tikzplot_4_col_mark.dat} node[orange, pos=0.5, above, Sloped]{data3};
+ \addplot[name path = 4, thick, densely dotted, color=yellow, mark=square] table [x expr=\thisrowno{0}, y expr=\thisrowno{4}]{tikzplot_4_col_mark.dat} node[yellow, pos=0.5, above, Sloped]{data4};
  
  
  \end{axis}
