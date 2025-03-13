@@ -14,6 +14,8 @@ implicit none
 private
 public :: tikz
 
+character, parameter :: delim_vec = ';'
+
 integer, parameter :: OS_UNKNOWN = 0
 integer, parameter :: OS_LINUX   = 1
 integer, parameter :: OS_MACOS   = 2
@@ -131,7 +133,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
     if (present(legend)) then
         le = legend
-        legendvec = decompose_str(le, genLoc(le, ';'))
+        legendvec = decompose_str(le, genLoc(le, delim_vec))
         if (size(legendvec) .ne. nj) then
             error stop "legend error: numbers of legends does not equal to numbers of columns on y"
         endif
@@ -158,8 +160,8 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
     cnames = "blue; orange; yellow; purple; green; light-blue; red"
 
-    colorvec = decompose_str(palette, genLoc(palette, ';'))
-    colorname = decompose_str(cnames, genLoc(cnames, ';'))
+    colorvec = decompose_str(palette, genLoc(palette, delim_vec))
+    colorname = decompose_str(cnames, genLoc(cnames, delim_vec))
 
     ! ------------------ !
     ! Default line style !
@@ -179,7 +181,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
                'loosely dashdotted; ' // &
                'loosely dashdotdotted '
 
-    stylevec = decompose_str(styleset, genLoc(styleset, ';'))
+    stylevec = decompose_str(styleset, genLoc(styleset, delim_vec))
 
     ! ------------------ !
     ! Default marker set !
@@ -194,7 +196,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
                 'pentagon;' // &
                 'asterisk'
 
-    markervec = decompose_str(markerset, genLoc(markerset, ';'))
+    markervec = decompose_str(markerset, genLoc(markerset, delim_vec))
 
     call set_opener()
 
@@ -203,7 +205,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     ! ----------------- !
 
     if (present(options)) then
-        optionvec = decompose_str(options, genLoc(options, ';'))
+        optionvec = decompose_str(options, genLoc(options, delim_vec))
         do i = 1, size(optionvec), 1
             optmp = decompose_str(optionvec(i), genLoc(optionvec(i), ':'))
             select case (trim(optmp(1)))
