@@ -52,4 +52,10 @@ program example
         options = 'color: gray, blue, orange, yellow; &
                   marker: true')
 
+    !! example: groupplot
+    call groupplot(2, 1)
+    call tikz(x)
+    call tikz(z)
+    call groupplot
+
 end program example

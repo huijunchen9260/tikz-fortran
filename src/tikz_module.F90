@@ -544,8 +544,8 @@ subroutine multi_plot_start(unitno)
     integer, intent(in) :: unitno
         write(unitno, *) "\begin{groupplot}["
         write(unitno, *) "    group style={"
-        write(unitno, *) "        group size=" // num2str(row_group) // &
-                                        " by " // num2str(col_group) // ","
+        write(unitno, *) "        group size=" // num2str(col_group) // &
+                                        " by " // num2str(row_group) // ","
         write(unitno, *) "        horizontal sep=2cm,"
         write(unitno, *) "         vertical sep=2cm"
         write(unitno, *) "}]"

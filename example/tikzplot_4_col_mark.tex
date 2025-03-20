@@ -5,7 +5,26 @@
  \usetikzlibrary{decorations.pathreplacing, intersections, fillbetween}
  \usetikzlibrary{calc,positioning}
  \usetikzlibrary{plotmarks}
- \pgfplotsset{compat=newest, scale only axis, width = 13cm, height = 6cm}
+ \usetikzlibrary{pgfplots.groupplots}
+ \pgfplotsset{compat=newest, scale only axis, width = 9cm, height = 5cm}
+ \pgfplotsset{sciclean/.style={axis lines=left,
+         grid=both,
+         major grid style={line width=.2pt,draw=gray!50, dashed},
+         axis x line shift=0.5em,
+         axis y line shift=0.5em,
+         axis line style={-,very thin},
+         axis background/.style={draw,ultra thin,gray},
+         tick align=outside,
+         xticklabel style={
+             /pgf/number format/fixed,
+             /pgf/number format/precision=2
+         },
+         yticklabel style={
+             /pgf/number format/fixed,
+             /pgf/number format/precision=2
+         },
+         scaled y ticks=false,
+         major tick length=2pt}}
  
  % Create fake \onslide and other commands for standalone picture
  \usepackage{xparse}
@@ -64,24 +83,7 @@
  
  
  \begin{axis}[
-     axis lines=left,
-     axis line style={-,very thin},
-     axis background/.style={draw,ultra thin,gray},
-     tick align=outside,
-     grid=both,
-     major grid style={line width=.2pt,draw=gray!50, dashed},
-     axis x line shift=0.5em,
-     axis y line shift=0.5em,
-     xticklabel style={
-         /pgf/number format/fixed,
-         /pgf/number format/precision=2
-     },
-     yticklabel style={
-         /pgf/number format/fixed,
-         /pgf/number format/precision=2
-     },
-     scaled y ticks=false,
-     major tick length=2pt,
+     sciclean,
      xlabel = {$x$},
      ylabel = {$y$},
      xmin = 1.0000000000000000,

@@ -82,6 +82,19 @@ call tikz(x, y, name = './example/tikzplot_4_col_mark.tex', &
     options = 'color: gray, blue, orange, yellow; marker: true')
 ```
 
+## Groupplot
+
+[`Groupplot`](https://tikz.dev/pgfplots/libs-groupplots) library has similar functionality to the `python`'s `plt.subplots` or `Matlab`'s `subplot` or `subfigure`.
+
+The usage is less verbose to ordinary usage. The syntax is
+
+```fortran
+call groupplot(2, 1)    !! 2 rows, 1 column
+call tikz(x)
+call tikz(z)            !! needs to have rows*columns figures, otherwise it won't compile
+call groupplot          !! stop the groupplot
+```
+
 ## PGF/Tikz templated used
 
 The `Sloped` section of template comes from [stack overflow](https://tex.stackexchange.com/a/184242), which allows me to put legend along the slope at the function.
