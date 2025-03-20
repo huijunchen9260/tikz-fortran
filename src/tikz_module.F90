@@ -9,12 +9,10 @@ use, intrinsic :: iso_Fortran_env, only : wp => real64, int32, int64, real32, re
 !use omp_lib
 !Suggestion from fortran-lang to remove strong dependency on openmp:
 !https://fortran-lang.discourse.group/t/using-tikz-to-plot-for-fortran/8166/13?u=fish830911
-!$omp_lib
+!!$omp_lib
 implicit none
 private
-public :: tikz
-
-character, parameter :: delim_vec = ';'
+public :: tikz, meshgrid, groupplot
 
 integer, parameter :: OS_UNKNOWN = 0
 integer, parameter :: OS_LINUX   = 1
@@ -29,6 +27,10 @@ interface tikz
     module procedure tikz_plot_y, tikz_plot_y2, tikz_plot_xy, tikz_plot_xy2
 end interface tikz
 
+interface groupplot
+    module procedure groupplot_start, groupplot_stop
+end interface groupplot
+
 
 ! convert int32, int64, real32, real64 into string
 interface num2str
@@ -40,7 +42,30 @@ end interface num2str
 
 character(len=255) :: opener
 
+logical :: isGroupPlot = .false.
+integer :: row_group = 0, col_group = 0
+integer :: fig_count, fig_max
+character(len=:), allocatable :: groupName, groupPath, groupFName, groupType
+
 contains
+
+subroutine groupplot_start(row, col)
+    integer, intent(in) :: row, col
+
+    row_group = row
+    col_group = col
+    fig_count = 1
+    fig_max = row_group*col_group
+    isGroupPlot = .true.
+end subroutine groupplot_start
+
+subroutine groupplot_stop
+    row_group = 0
+    col_group = 0
+    fig_count = 1
+    fig_max = 1
+    isGroupPlot = .false.
+end subroutine groupplot_stop
 
 subroutine tikz_plot_y(y, title, xlabel, ylabel, legend, name, options)
 
@@ -82,6 +107,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     !local
     integer :: i, j
     integer :: unitno                                               ! thread save unit number
+    integer :: unitdat                                              ! thread save unit number
     integer :: thread_id
     integer :: ni, nj                                               ! dimension of x and y
     character(len=5) :: tmpChar5                                    ! tmp file name based on thread
@@ -133,7 +159,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
     if (present(legend)) then
         le = legend
-        legendvec = decompose_str(le, genLoc(le, delim_vec))
+        legendvec = decompose_str(le, genLoc(le, ';'))
         if (size(legendvec) .ne. nj) then
             error stop "legend error: numbers of legends does not equal to numbers of columns on y"
         endif
@@ -160,8 +186,8 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
     cnames = "blue; orange; yellow; purple; green; light-blue; red"
 
-    colorvec = decompose_str(palette, genLoc(palette, delim_vec))
-    colorname = decompose_str(cnames, genLoc(cnames, delim_vec))
+    colorvec = decompose_str(palette, genLoc(palette, ';'))
+    colorname = decompose_str(cnames, genLoc(cnames, ';'))
 
     ! ------------------ !
     ! Default line style !
@@ -181,7 +207,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
                'loosely dashdotted; ' // &
                'loosely dashdotdotted '
 
-    stylevec = decompose_str(styleset, genLoc(styleset, delim_vec))
+    stylevec = decompose_str(styleset, genLoc(styleset, ';'))
 
     ! ------------------ !
     ! Default marker set !
@@ -196,7 +222,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
                 'pentagon;' // &
                 'asterisk'
 
-    markervec = decompose_str(markerset, genLoc(markerset, delim_vec))
+    markervec = decompose_str(markerset, genLoc(markerset, ';'))
 
     call set_opener()
 
@@ -205,7 +231,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     ! ----------------- !
 
     if (present(options)) then
-        optionvec = decompose_str(options, genLoc(options, delim_vec))
+        optionvec = decompose_str(options, genLoc(options, ';'))
         do i = 1, size(optionvec), 1
             optmp = decompose_str(optionvec(i), genLoc(optionvec(i), ':'))
             select case (trim(optmp(1)))
@@ -234,8 +260,6 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
                         error stop "options error: numbers of line style do not equal to numbers of columns on y"
                     endif
                 case ('marker')
-                    !! marker can be "true" to use default marker
-                    !! or specify marker used in each line.
                     opmarker = decompose_str(optmp(2),  genLoc(optmp(2), ','))
             end select
             deallocate(optmp)
@@ -249,9 +273,9 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     if (allocated(oplegend)) then
         do j = 1, size(oplegend), 1
             if (trim(oplegend(j)) == 'line' .or. trim(oplegend(j)) == 'box') then
-                legend_type = trim(oplegend(j))
+                legend_type = oplegend(j)
             else
-                legend_loc = trim(oplegend(j))
+                legend_loc = oplegend(j)
             endif
         enddo
     endif
@@ -276,9 +300,9 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
         enddo
     endif
 
-    ! --------------------------- !
-    ! default opmarker: no marker !
-    ! --------------------------- !
+    ! ---------------- !
+    ! default opmarker !
+    ! ---------------- !
 
     if (.not. allocated(opmarker)) then
         allocate(opmarker(nj))
@@ -286,22 +310,13 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
             opmarker(j) = 'false'
         enddo
     else
-        !! if given optional marker,
-        !! whether it is set true to use default markervec,
-        !! or use supplied markervec
-        if (opmarker(1) == 'true') then
-            deallocate(opmarker)
-            allocate(opmarker(nj))
-            do j = 1, nj, 1
-                i = mod(j, size(markervec))
-                i = merge(size(markervec), i, i .eq. 0)
-                opmarker(j) = markervec(i)
-            enddo
-        else
-            if (size(opmarker) .ne. nj) then
-                error stop "options error: numbers of markers do not equal to numbers of columns on y"
-            endif
-        endif
+        deallocate(opmarker)
+        allocate(opmarker(nj))
+        do j = 1, nj, 1
+            i = mod(j, size(markervec))
+            i = merge(size(markervec), i, i .eq. 0)
+            opmarker(j) = markervec(i)
+        enddo
     endif
 
     ! --------------------------------------------------- !
@@ -327,6 +342,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     !$thread_id = omp_get_thread_num()
     write(tmpChar5,'(i0)') thread_id
     unitno = 726+thread_id
+    unitdat = 412+thread_id
 
     ! ------------------- !
     ! decompose file name !
@@ -338,56 +354,96 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
         tikz = trim(fname) // '.tex'
         isTmp = .false.
     else
-        fpath = './'
-        fname = 'tikzplot' // trim(tmpChar5)
-        ftype = ''
-        dat = 'tikzdata' // trim(tmpChar5) // '.dat'
-        tikz = 'tikzplot' // trim(tmpChar5) // '.tex'
-        isTmp = .true.
+        if (isGroupPlot) then
+            fpath = './'
+            fname = 'tikzplot' // trim(tmpChar5)
+            ftype = ''
+            dat = 'tikzdata' // trim(tmpChar5) // num2str(fig_count) // '.dat'
+            tikz = 'tikzplot' // trim(tmpChar5) // '.tex'
+            isTmp = .true.
+        else
+            fpath = './'
+            fname = 'tikzplot' // trim(tmpChar5)
+            ftype = ''
+            dat = 'tikzdata' // trim(tmpChar5) // '.dat'
+            tikz = 'tikzplot' // trim(tmpChar5) // '.tex'
+            isTmp = .true.
+        endif
     endif
 
     ! ------------------ !
     ! creating data file !
     ! ------------------ !
 
-    call write_dat(x, y, ni, nj, unitno, fpath, dat)
+    call write_dat(x, y, ni, nj, unitdat, fpath, dat)
 
     xmin = minval(x)
     xmax = maxval(x)
     ymin = minval(y)
     ymax = maxval(y)
 
-    call write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
-        colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
-        opcolor, oplinestyle, opmarker)
-
-    call typeset(fpath, fname, tikz, .true.)
-
-    if (isTmp) then
-        call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1;')
+    if (isGroupPlot) then
+        if (fig_count .eq. 1) then
+            groupName = tikz
+            groupPath = fpath
+            groupFName = fname
+            groupType = ftype
+            write(*, *) 'Groupplot names: ', trim(fpath) // trim(fname)
+            call write_preamble(colorvec, colorname, unitno, fpath, tikz)
+            call multi_plot_start(unitno)
+        endif
+        call multi_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
+                colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+                opcolor, oplinestyle, opmarker)
+        if (fig_count < fig_max) then
+            fig_count = fig_count + 1
+            return
+        else
+            call multi_plot_end(unitno)
+        endif
     else
-        call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1 &')
+        call write_preamble(colorvec, colorname, unitno, fpath, tikz)
+        call single_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
+            colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+            opcolor, oplinestyle, opmarker)
     endif
 
-    if (isTmp) call execute_command_line(&
-        'rm ' // trim(fpath) // trim(fname) // '.pdf; ' // &
-        'rm ' // trim(fpath) // trim(tikz) // '; ' // &
-        'rm ' // trim(fpath) // trim(dat) // '; ')
+    call write_finale(unitno)
+
+    if (isGroupPlot) then
+        call typeset(groupPath, groupFName, groupName, .true.)
+        if (isTmp) then
+            call execute_command_line(trim(opener) // ' ' // trim(groupPath) // trim(groupFName) // '.pdf > /dev/null 2>&1;')
+        else
+            call execute_command_line(trim(opener) // ' ' // trim(groupPath) // trim(groupFName) // '.pdf > /dev/null 2>&1 &')
+        endif
+    else
+        call typeset(fpath, fname, tikz, .true.)
+        if (isTmp) then
+            call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1;')
+        else
+            call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1 &')
+        endif
+    endif
+
+    !if (isTmp) then
+    !    call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1;')
+    !else
+    !    call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1 &')
+    !endif
+
+    !if (isTmp) call execute_command_line(&
+    !    'rm ' // trim(fpath) // trim(fname) // '.pdf; ' // &
+    !    'rm ' // trim(fpath) // trim(tikz) // '; ' // &
+    !    'rm ' // trim(fpath) // trim(dat) // '; ')
 
 
 end subroutine tikz_plot_xy2
 
-subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
-        colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
-        opcolor, oplinestyle, opmarker)
-
-    integer, intent(in) :: unitno, nj
-    character(len=*), intent(in) :: fpath, tikz, dat
-    character(len=*), intent(in) :: title, xlb, ylb
+subroutine write_preamble(colorvec, colorname, unitno, fpath, tikz)
+    integer, intent(in) :: unitno
     character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
-    character(len=*), intent(in) :: legend_type, legend_loc
-    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle, opmarker
-    real(wp), intent(in) :: xmin, xmax, ymin, ymax
+    character(len=*), intent(in) :: fpath, tikz
     integer :: j
 
     open(unitno, file=trim(fpath) // trim(tikz),status='unknown')
@@ -399,27 +455,26 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
        write(unitno, *) "\usetikzlibrary{decorations.pathreplacing, intersections, fillbetween}"
        write(unitno, *) "\usetikzlibrary{calc,positioning}"
        write(unitno, *) "\usetikzlibrary{plotmarks}"
-       write(unitno, *) "\pgfplotsset{compat=newest, scale only axis, width = 13cm, height = 6cm}"
-       !write(unitno, *) "\pgfplotsset{sciclean/.style={axis lines=left,"
-       !write(unitno, *) "        grid=both,"
-       !write(unitno, *) "        major grid style={line width=.2pt,draw=gray!50, dashed},"
-       !write(unitno, *) "        axis x line shift=0.5em,"
-       !write(unitno, *) "        axis y line shift=0.5em,"
-       !write(unitno, *) "        axis line style={-,very thin},"
-       !write(unitno, *) "        axis background/.style={draw,ultra thin,gray},"
-       !write(unitno, *) "        tick align=outside,"
-       !write(unitno, *) "        xtick distance=" // num2str(xticsdist) // ","
-       !write(unitno, *) "        ytick distance=" // num2str(yticsdist) // ","
-       !write(unitno, *) "        xticklabel style={"
-       !write(unitno, *) "            /pgf/number format/fixed,"
-       !write(unitno, *) "            /pgf/number format/precision=2"
-       !write(unitno, *) "        },"
-       !write(unitno, *) "        yticklabel style={"
-       !write(unitno, *) "            /pgf/number format/fixed,"
-       !write(unitno, *) "            /pgf/number format/precision=2"
-       !write(unitno, *) "        },"
-       !write(unitno, *) "        scaled y ticks=false,"
-       !write(unitno, *) "        major tick length=2pt}}"
+       write(unitno, *) "\usetikzlibrary{pgfplots.groupplots}"
+       write(unitno, *) "\pgfplotsset{compat=newest, scale only axis, width = 9cm, height = 5cm}"
+       write(unitno, *) "\pgfplotsset{sciclean/.style={axis lines=left,"
+       write(unitno, *) "        grid=both,"
+       write(unitno, *) "        major grid style={line width=.2pt,draw=gray!50, dashed},"
+       write(unitno, *) "        axis x line shift=0.5em,"
+       write(unitno, *) "        axis y line shift=0.5em,"
+       write(unitno, *) "        axis line style={-,very thin},"
+       write(unitno, *) "        axis background/.style={draw,ultra thin,gray},"
+       write(unitno, *) "        tick align=outside,"
+       write(unitno, *) "        xticklabel style={"
+       write(unitno, *) "            /pgf/number format/fixed,"
+       write(unitno, *) "            /pgf/number format/precision=2"
+       write(unitno, *) "        },"
+       write(unitno, *) "        yticklabel style={"
+       write(unitno, *) "            /pgf/number format/fixed,"
+       write(unitno, *) "            /pgf/number format/precision=2"
+       write(unitno, *) "        },"
+       write(unitno, *) "        scaled y ticks=false,"
+       write(unitno, *) "        major tick length=2pt}}"
        write(unitno, *) ""
        write(unitno, *) "% Create fake \onslide and other commands for standalone picture"
        write(unitno, *) "\usepackage{xparse}"
@@ -473,50 +528,97 @@ subroutine write_tikz(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
        write(unitno, *) "\begin{tikzpicture}"
        write(unitno, *) ""
        write(unitno, *) ""
-       write(unitno, *) "\begin{axis}["
-       write(unitno, *) "    axis lines=left,"
-       write(unitno, *) "    axis line style={-,very thin},"
-       write(unitno, *) "    axis background/.style={draw,ultra thin,gray},"
-       write(unitno, *) "    tick align=outside,"
-       write(unitno, *) "    grid=both,"
-       write(unitno, *) "    major grid style={line width=.2pt,draw=gray!50, dashed},"
-       write(unitno, *) "    axis x line shift=0.5em,"
-       write(unitno, *) "    axis y line shift=0.5em,"
-       write(unitno, *) "    xticklabel style={"
-       write(unitno, *) "        /pgf/number format/fixed,"
-       write(unitno, *) "        /pgf/number format/precision=2"
-       write(unitno, *) "    },"
-       write(unitno, *) "    yticklabel style={"
-       write(unitno, *) "        /pgf/number format/fixed,"
-       write(unitno, *) "        /pgf/number format/precision=2"
-       write(unitno, *) "    },"
-       write(unitno, *) "    scaled y ticks=false,"
-       write(unitno, *) "    major tick length=2pt,"
-       write(unitno, *) "    xlabel = {" // xlb // "},"
-       write(unitno, *) "    ylabel = {" // ylb // "},"
-       write(unitno, *) "    xmin = " // num2str(xmin) // ","
-       write(unitno, *) "    xmax = " // num2str(xmax) // ","
-       write(unitno, *) "    ymin = " // num2str(ymin) // ","
-       write(unitno, *) "    ymax = " // num2str(ymax) // ","
-       write(unitno, *) "    legend cell align = left,"
-       write(unitno, *) "    legend pos = " // legend_loc // ","
-       write(unitno, *) "    title = {" // title // "}]"
-       write(unitno, *) ""
-       write(unitno, *) ""
-       call plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, &
-           legend_type, opcolor, oplinestyle, opmarker)
-       write(unitno, *) ""
-       write(unitno, *) ""
-       write(unitno, *) "\end{axis}"
-       write(unitno, *) ""
-       write(unitno, *) ""
-       write(unitno, *) "\end{tikzpicture}"
-       write(unitno, *) ""
-       write(unitno, *) "\end{document}"
+end subroutine write_preamble
+
+subroutine write_finale(unitno)
+    integer, intent(in) :: unitno
+        write(unitno, *) ""
+        write(unitno, *) ""
+        write(unitno, *) "\end{tikzpicture}"
+        write(unitno, *) ""
+        write(unitno, *) "\end{document}"
     close(unitno)
+end subroutine write_finale
 
+subroutine multi_plot_start(unitno)
+    integer, intent(in) :: unitno
+        write(unitno, *) "\begin{groupplot}["
+        write(unitno, *) "    group style={"
+        write(unitno, *) "        group size=" // num2str(row_group) // &
+                                        " by " // num2str(col_group) // ","
+        write(unitno, *) "        horizontal sep=2cm,"
+        write(unitno, *) "         vertical sep=2cm"
+        write(unitno, *) "}]"
+end subroutine multi_plot_start
 
-end subroutine write_tikz
+subroutine multi_plot_end(unitno)
+    integer, intent(in) :: unitno
+
+        write(unitno, *) "\end{groupplot}"
+end subroutine multi_plot_end
+
+subroutine multi_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
+        colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+        opcolor, oplinestyle, opmarker)
+
+    integer, intent(in) :: unitno, nj
+    character(len=*), intent(in) :: fpath, tikz, dat
+    character(len=*), intent(in) :: title, xlb, ylb
+    character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
+    character(len=*), intent(in) :: legend_type, legend_loc
+    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle, opmarker
+    real(wp), intent(in) :: xmin, xmax, ymin, ymax
+    integer :: j
+    write(unitno, *) "\nextgroupplot["
+    write(unitno, *) "    sciclean,"
+    write(unitno, *) "    xlabel = {" // xlb // "},"
+    write(unitno, *) "    ylabel = {" // ylb // "},"
+    write(unitno, *) "    xmin = " // num2str(xmin) // ","
+    write(unitno, *) "    xmax = " // num2str(xmax) // ","
+    write(unitno, *) "    ymin = " // num2str(ymin) // ","
+    write(unitno, *) "    ymax = " // num2str(ymax) // ","
+    write(unitno, *) "    legend cell align = left,"
+    write(unitno, *) "    legend pos = " // legend_loc // ","
+    write(unitno, *) "    title = {" // title // "}]"
+    write(unitno, *) ""
+    call plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, &
+       legend_type, opcolor, oplinestyle, opmarker)
+    write(unitno, *) ""
+end subroutine multi_plot
+
+subroutine single_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
+        colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+        opcolor, oplinestyle, opmarker)
+
+    integer, intent(in) :: unitno, nj
+    character(len=*), intent(in) :: fpath, tikz, dat
+    character(len=*), intent(in) :: title, xlb, ylb
+    character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
+    character(len=*), intent(in) :: legend_type, legend_loc
+    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle, opmarker
+    real(wp), intent(in) :: xmin, xmax, ymin, ymax
+    integer :: j
+
+    write(unitno, *) "\begin{axis}["
+    write(unitno, *) "    sciclean,"
+    write(unitno, *) "    xlabel = {" // xlb // "},"
+    write(unitno, *) "    ylabel = {" // ylb // "},"
+    write(unitno, *) "    xmin = " // num2str(xmin) // ","
+    write(unitno, *) "    xmax = " // num2str(xmax) // ","
+    write(unitno, *) "    ymin = " // num2str(ymin) // ","
+    write(unitno, *) "    ymax = " // num2str(ymax) // ","
+    write(unitno, *) "    legend cell align = left,"
+    write(unitno, *) "    legend pos = " // legend_loc // ","
+    write(unitno, *) "    title = {" // title // "}]"
+    write(unitno, *) ""
+    write(unitno, *) ""
+    call plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, &
+       legend_type, opcolor, oplinestyle, opmarker)
+    write(unitno, *) ""
+    write(unitno, *) ""
+    write(unitno, *) "\end{axis}"
+
+end subroutine single_plot
 
 subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, legend_type, &
         opcolor, oplinestyle, opmarker)
@@ -563,22 +665,22 @@ subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, lege
 
 end subroutine plotting
 
-subroutine write_dat(x, y, ni, nj, unitno, fpath, dat)
+subroutine write_dat(x, y, ni, nj, unitdat, fpath, dat)
     real(wp), intent(in) :: x(:), y(:, :)
-    integer, intent(in) :: unitno, ni, nj
+    integer, intent(in) :: unitdat, ni, nj
     character(len=*), intent(in) :: fpath, dat
     integer :: i, j
 
     ! Write data to a temporary file
-    open(unitno,file=trim(fpath) // trim(dat),status='unknown')
+    open(unitdat,file=trim(fpath) // trim(dat),status='unknown')
     do i = 1,ni
-        write(unitno,'(1PE24.15E3)',advance='no') x(i)
+        write(unitdat,'(1PE24.15E3)',advance='no') x(i)
         do j = 1,nj
-            write(unitno,'(1PE24.15E3)',advance='no') y(i,j)
+            write(unitdat,'(1PE24.15E3)',advance='no') y(i,j)
         end do
-        write(unitno,*)
+        write(unitdat,*)
     end do
-    close(unitno)
+    close(unitdat)
 end subroutine write_dat
 
 subroutine decompose_name(fname, fpath, ftype, name)
@@ -771,7 +873,7 @@ subroutine typeset(fpath, fname, tikz, isSaveFile)
     character(len=:), allocatable :: plotfile
     integer :: unitno, ierr
 
-    write(*, *) trim(fpath) // trim(fname)
+    write(*, *) 'tikz typeset names: ', trim(fpath) // trim(fname)
 
     call execute_command_line('cwd=$PWD; cd ' // trim(fpath) // &
         '; pdflatex ' // trim(tikz) // ' > /dev/null 2>&1; cd "$cwd"',exitstat=ierr)
@@ -955,80 +1057,80 @@ integer function get_os_type() result(r)
     end if
 end function get_os_type
 
-!subroutine meshgrid(x,y,xgv,ygv, ierr)
-!    !..............................................................................
-!    !meshgrid generate mesh grid over a rectangular domain of [xmin xmax, ymin, ymax]
-!    ! Inputs:
-!    !     xgv, ygv are grid vectors in form of full grid data
-!    ! Outputs:
-!    !     X and Y are matrix each of size [ny by nx] contains the grid data.
-!    !     The coordinates of point (i,j) is [X(i,j), Y(i,j)]
-!    !     ierr: The error flag
-!    !     """
-!    !     # Example
-!    !     # call meshgrid(X, Y, [0.,1.,2.,3.],[5.,6.,7.,8.])
-!    !     # X
-!    !     # [0.0, 1.0, 2.0, 3.0,
-!    !     #  0.0, 1.0, 2.0, 3.0,
-!    !     #  0.0, 1.0, 2.0, 3.0,
-!    !     #  0.0, 1.0, 2.0, 3.0]
-!    !     #
-!    !     #Y
-!    !     #[ 5.0, 5.0, 5.0, 5.0,
-!    !     #  6.0, 6.0, 6.0, 6.0,
-!    !     #  7.0, 7.0, 7.0, 7.0,
-!    !     #  8.0, 8.0, 8.0, 8.0]
-!    !..............................................................................
-!    ! Rev 0.2, Feb 2018
-!    ! New feature added: xgv and ygv as full grid vector are accepted now
-!
-!    ! Arguments
-!    real(wp), intent(out), allocatable  :: x(:,:)
-!    real(wp), intent(out), allocatable  :: y(:,:)
-!    real(wp), intent(in)                :: xgv(:) ! x grid vector [start, stop, step] or [start, stop]
-!    real(wp), intent(in),  optional     :: ygv(:) ! y grid vector [start, stop, step] or [start, stop]
-!    integer,  intent(out), optional     :: ierr   ! the error value
-!
-!    ! Local variables
-!    integer:: sv
-!    integer:: nx
-!    integer:: ny
-!    logical:: only_xgv_available
-!
-!    ! Initial setting
-!    only_xgv_available  = .false.
-!    sv=0 !Assume no error
-!
-!    nx=size(xgv, dim=1)
-!
-!    if (present(ygv)) then
-!        ny = size(ygv, dim=1)
-!    else
-!        only_xgv_available=.true.
-!        ny=nx
-!    end if
-!
-!    allocate(x(ny,nx),y(ny,nx),stat=sv)
-!    if (sv /=0) then
-!        print*, "allocataion erro in meshgrid"
-!        stop
-!    end if
-!
-!    x(1,:)    = xgv
-!    x(2:ny,:) = spread(xgv, dim=1, ncopies=ny-1)
-!
-!    if (only_xgv_available) then
-!        y=transpose(x)
-!    else
-!        y(:,1)    = ygv
-!        y(:,2:nx) = spread(ygv,dim=2,ncopies=nx-1)
-!    end if
-!
-!    if (present(ierr)) then
-!        ierr=sv
-!    end if
-!
-!end subroutine meshgrid
+subroutine meshgrid(x,y,xgv,ygv, ierr)
+    !..............................................................................
+    !meshgrid generate mesh grid over a rectangular domain of [xmin xmax, ymin, ymax]
+    ! Inputs:
+    !     xgv, ygv are grid vectors in form of full grid data
+    ! Outputs:
+    !     X and Y are matrix each of size [ny by nx] contains the grid data.
+    !     The coordinates of point (i,j) is [X(i,j), Y(i,j)]
+    !     ierr: The error flag
+    !     """
+    !     # Example
+    !     # call meshgrid(X, Y, [0.,1.,2.,3.],[5.,6.,7.,8.])
+    !     # X
+    !     # [0.0, 1.0, 2.0, 3.0,
+    !     #  0.0, 1.0, 2.0, 3.0,
+    !     #  0.0, 1.0, 2.0, 3.0,
+    !     #  0.0, 1.0, 2.0, 3.0]
+    !     #
+    !     #Y
+    !     #[ 5.0, 5.0, 5.0, 5.0,
+    !     #  6.0, 6.0, 6.0, 6.0,
+    !     #  7.0, 7.0, 7.0, 7.0,
+    !     #  8.0, 8.0, 8.0, 8.0]
+    !..............................................................................
+    ! Rev 0.2, Feb 2018
+    ! New feature added: xgv and ygv as full grid vector are accepted now
+
+    ! Arguments
+    real(wp), intent(out), allocatable  :: x(:,:)
+    real(wp), intent(out), allocatable  :: y(:,:)
+    real(wp), intent(in)                :: xgv(:) ! x grid vector [start, stop, step] or [start, stop]
+    real(wp), intent(in),  optional     :: ygv(:) ! y grid vector [start, stop, step] or [start, stop]
+    integer,  intent(out), optional     :: ierr   ! the error value
+
+    ! Local variables
+    integer:: sv
+    integer:: nx
+    integer:: ny
+    logical:: only_xgv_available
+
+    ! Initial setting
+    only_xgv_available  = .false.
+    sv=0 !Assume no error
+
+    nx=size(xgv, dim=1)
+
+    if (present(ygv)) then
+        ny = size(ygv, dim=1)
+    else
+        only_xgv_available=.true.
+        ny=nx
+    end if
+
+    allocate(x(ny,nx),y(ny,nx),stat=sv)
+    if (sv /=0) then
+        print*, "allocataion erro in meshgrid"
+        stop
+    end if
+
+    x(1,:)    = xgv
+    x(2:ny,:) = spread(xgv, dim=1, ncopies=ny-1)
+
+    if (only_xgv_available) then
+        y=transpose(x)
+    else
+        y(:,1)    = ygv
+        y(:,2:nx) = spread(ygv,dim=2,ncopies=nx-1)
+    end if
+
+    if (present(ierr)) then
+        ierr=sv
+    end if
+
+end subroutine meshgrid
 
 
 end module tikz_module
