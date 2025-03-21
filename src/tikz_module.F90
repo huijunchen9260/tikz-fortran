@@ -12,7 +12,7 @@ use, intrinsic :: iso_Fortran_env, only : wp => real64, int32, int64, real32, re
 !!$omp_lib
 implicit none
 private
-public :: tikz, meshgrid, groupplot
+public :: tikz, meshgrid, groupplot, surf
 
 integer, parameter :: OS_UNKNOWN = 0
 integer, parameter :: OS_LINUX   = 1
@@ -31,6 +31,9 @@ interface groupplot
     module procedure groupplot_start, groupplot_stop
 end interface groupplot
 
+interface surf
+    module procedure surf_plot_xy2
+end interface surf
 
 ! convert int32, int64, real32, real64 into string
 interface num2str
@@ -46,6 +49,9 @@ logical :: isGroupPlot = .false.
 integer :: row_group = 0, col_group = 0
 integer :: fig_count, fig_max
 character(len=:), allocatable :: groupName, groupPath, groupFName, groupType
+
+!! the unit of main_memory in texmf.cnf is a "word"? 1 word is 4 bytes
+real(wp) :: total_mem = 3000000.0_wp/4.0_wp
 
 contains
 
@@ -66,6 +72,232 @@ subroutine groupplot_stop
     fig_max = 1
     isGroupPlot = .false.
 end subroutine groupplot_stop
+
+subroutine surf_plot_xy2(x, y, z, title, xlabel, ylabel, zlabel, colormap, view, name, options)
+    !input
+    real(wp), intent(in) :: x(:), y(:), z(:, :)
+    integer, optional :: view(2)
+    character(len=*), intent(in), optional :: title, xlabel, ylabel, zlabel, colormap, name, options
+
+    !local
+    integer :: i, j
+    integer :: unitno                                               ! thread save unit number
+    integer :: unitdat                                              ! thread save unit number
+    integer :: thread_id
+    integer :: nx, ny, nz1, nz2                                     ! dimension of x, y, and z
+    character(len=5) :: tmpChar5                                    ! tmp file name based on thread
+    character(len=:), allocatable :: xlb                            ! local x label
+    character(len=:), allocatable :: ylb                            ! local y label
+    character(len=:), allocatable :: zlb                            ! local z label
+    character(len=:), allocatable :: le                             ! local legend
+    character(len=:), allocatable :: fname                          ! name of the tex file
+    character(len=:), allocatable :: fpath                          ! path of the tex file
+    character(len=:), allocatable :: cmp                            ! colormap
+    integer                       :: vview(2)                       ! view
+    character(len=3) :: ftype                                       ! file type
+    character(len=:), allocatable :: dat                            ! data file
+    character(len=:), allocatable :: tikz                           ! plotting tex file
+    real(wp) :: xmin, xmax, ymin, ymax                              ! boundary of the figure
+    character(len=:), allocatable :: palette                        ! color palette
+    character(len=:), allocatable :: cnames                         ! names of the color palette
+    character(len=:), allocatable :: styleset                       ! line style sets
+    character(len=:), allocatable :: markerset                      ! marker style sets
+    character(len=:), dimension(:), allocatable :: colorvec, colorname, optionvec, stylevec
+    character(len=:), dimension(:), allocatable :: markervec
+    character(len=:), dimension(:), allocatable :: optmp
+    character(len=100), dimension(:), allocatable :: legendvec, opcolor, oplinestyle, oplegend
+    character(len=100), dimension(:), allocatable :: opmarker
+    character(len=:), allocatable :: legend_type, legend_loc
+    logical :: isTmp
+
+    real(wp), dimension(:, :), allocatable :: xmesh, ymesh, data
+
+
+    nx = size(x)
+    ny = size(y)
+    nz1 = size(z, 1)
+    nz2 = size(z, 2)
+
+    !if (nx == nz2 .and. ny == nz1) error stop 'switch the grid of x and y'
+
+    if (nz1*nz2*8.0_wp*3.0_wp > total_mem) error stop 'the size of z is too big'
+
+    allocate(xmesh(nx, ny), source = 0.0_wp)
+    allocate(ymesh(nx, ny), source = 0.0_wp)
+    allocate(data(nx*ny, 3), source = 0.0_wp)
+
+    ! ------------------ !
+    ! Set default values !
+    ! ------------------ !
+
+    if (present(xlabel)) then
+        xlb = xlabel
+    else
+        xlb = '$x$'
+    endif
+
+    if (present(ylabel)) then
+        ylb = ylabel
+    else
+        ylb = '$y$'
+    endif
+
+    if (present(zlabel)) then
+        zlb = zlabel
+    else
+        zlb = '$z$'
+    endif
+
+    if (present(colormap)) then
+        cmp = colormap
+    else
+        !cmp = "viridis"
+        cmp = "jet"
+    endif
+
+    if (present(view)) then
+        vview = view
+    else
+        vview = [30, 50]
+    endif
+
+    ! -------------------- !
+    ! Set default colormap !
+    ! -------------------- !
+
+    ! matlab colormap
+    ! Source: http://gnuplotting.org/matlab-colorbar-parula-with-gnuplot/index.html
+    palette = '0072BD; ' // & ! blue
+              'D95319; ' // & ! orange
+              'EDB120; ' // & ! yellow
+              '7E2F8E; ' // & ! purple
+              '77AC30; ' // & ! green
+              '4DBEEE; ' // & ! light-blue
+              'A2142F '       ! red
+
+    cnames = "blue; orange; yellow; purple; green; light-blue; red"
+
+    colorvec = decompose_str(palette, genLoc(palette, ';'))
+    colorname = decompose_str(cnames, genLoc(cnames, ';'))
+
+    ! ------------------ !
+    ! Default line style !
+    ! ------------------ !
+
+    styleset = 'solid; ' // &
+               'dashdotdotted; ' // &
+               'densely dashdotdotted; ' // &
+               'densely dotted; ' // &
+               'densely dashed; ' // &
+               'dotted; ' // &
+               'dashed; ' // &
+               'loosely dotted; ' // &
+               'loosely dashed; ' // &
+               'dashdotted; ' // &
+               'densely dashdotted; ' // &
+               'loosely dashdotted; ' // &
+               'loosely dashdotdotted '
+
+    stylevec = decompose_str(styleset, genLoc(styleset, ';'))
+
+    ! ------------------ !
+    ! Default marker set !
+    ! ------------------ !
+
+    markerset = 'o; ' // &
+                'square;' // &
+                'pentagon;' // &
+                'square;' // &
+                'triangle;' // &
+                'diamond;' // &
+                'pentagon;' // &
+                'asterisk'
+
+    markervec = decompose_str(markerset, genLoc(markerset, ';'))
+
+    ! ------------------------------------- !
+    ! thread safe external file unit number !
+    ! ------------------------------------- !
+
+    !Suggestion from fortran-lang to remove strong dependency on openmp:
+    !https://fortran-lang.discourse.group/t/using-tikz-to-plot-for-fortran/8166/13?u=fish830911
+    thread_id = 0
+    !$thread_id = omp_get_thread_num()
+    write(tmpChar5,'(i0)') thread_id
+    unitno = 726+thread_id
+    unitdat = 412+thread_id
+
+    ! ------------------- !
+    ! decompose file name !
+    ! ------------------- !
+
+    if (present(name)) then
+        call decompose_name(fname, fpath, ftype, name)
+        dat = trim(fname) // '.dat'
+        tikz = trim(fname) // '.tex'
+        isTmp = .false.
+    else
+        if (isGroupPlot) then
+            fpath = './'
+            fname = 'tikzplot' // trim(tmpChar5)
+            ftype = ''
+            dat = 'tikzdata' // trim(tmpChar5) // num2str(fig_count) // '.dat'
+            tikz = 'tikzplot' // trim(tmpChar5) // '.tex'
+            isTmp = .true.
+        else
+            fpath = './'
+            fname = 'tikzplot' // trim(tmpChar5)
+            ftype = ''
+            dat = 'tikzdata' // trim(tmpChar5) // '.dat'
+            tikz = 'tikzplot' // trim(tmpChar5) // '.tex'
+            isTmp = .true.
+        endif
+    endif
+
+    call set_opener()
+
+    call meshgrid(ymesh, xmesh, y, x)
+
+    data(:, 1) = reshape(xmesh, [nx*ny])
+    data(:, 2) = reshape(ymesh, [nx*ny])
+    data(:, 3) = reshape(z, [nx*ny])
+
+    ! ------------------ !
+    ! creating data file !
+    ! ------------------ !
+
+    call write_surf_dat(data, unitdat, nx, fpath, dat)
+
+    xmin = minval(x)
+    xmax = maxval(x)
+    ymin = minval(y)
+    ymax = maxval(y)
+
+    call write_preamble(colorvec, colorname, unitno, fpath, tikz)
+
+    call surf_plot(unitno, fpath, tikz, dat, xmin, xmax, ymin, ymax, &
+            vview, cmp, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+            opcolor, oplinestyle, opmarker)
+
+    call write_finale(unitno)
+
+    if (isGroupPlot) then
+        call typeset(groupPath, groupFName, groupName, .true.)
+        if (isTmp) then
+            call execute_command_line(trim(opener) // ' ' // trim(groupPath) // trim(groupFName) // '.pdf > /dev/null 2>&1;')
+        else
+            call execute_command_line(trim(opener) // ' ' // trim(groupPath) // trim(groupFName) // '.pdf > /dev/null 2>&1 &')
+        endif
+    else
+        call typeset(fpath, fname, tikz, .true.)
+        if (isTmp) then
+            call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1;')
+        else
+            call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1 &')
+        endif
+    endif
+
+end subroutine surf_plot_xy2
 
 subroutine tikz_plot_y(y, title, xlabel, ylabel, legend, name, options)
 
@@ -455,7 +687,7 @@ subroutine write_preamble(colorvec, colorname, unitno, fpath, tikz)
        write(unitno, *) "\usetikzlibrary{decorations.pathreplacing, intersections, fillbetween}"
        write(unitno, *) "\usetikzlibrary{calc,positioning}"
        write(unitno, *) "\usetikzlibrary{plotmarks}"
-       write(unitno, *) "\usetikzlibrary{pgfplots.groupplots}"
+       write(unitno, *) "\usetikzlibrary{pgfplots.groupplots, pgfplots.colormaps}"
        write(unitno, *) "\pgfplotsset{compat=newest, scale only axis, width = 9cm, height = 5cm}"
        write(unitno, *) "\pgfplotsset{sciclean/.style={axis lines=left,"
        write(unitno, *) "        grid=both,"
@@ -620,6 +852,40 @@ subroutine single_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
 
 end subroutine single_plot
 
+subroutine surf_plot(unitno, fpath, tikz, dat, xmin, xmax, ymin, ymax, &
+        view, colormap, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+        opcolor, oplinestyle, opmarker)
+
+    integer, intent(in) :: unitno, view(2)
+    character(len=*), intent(in) :: fpath, tikz, dat
+    character(len=*), intent(in) :: title, xlb, ylb, colormap
+    character(len=:), dimension(:), allocatable, intent(in) :: colorname
+    character(len=*), intent(in) :: legend_type, legend_loc
+    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle, opmarker
+    real(wp), intent(in) :: xmin, xmax, ymin, ymax
+    integer :: j
+
+    write(unitno, *) "\begin{axis}["
+    write(unitno, *) "    sciclean,"
+    write(unitno, *) "    xlabel = {" // xlb // "},"
+    write(unitno, *) "    ylabel = {" // ylb // "},"
+    write(unitno, *) "    colormap/" // colormap //","
+    write(unitno, *) "    colorbar,"
+    write(unitno, *) "    view={" // num2str(view(1)) // "}{" // num2str(view(2)) // "},"
+    write(unitno, *) "    xmin = " // num2str(xmin) // ","
+    write(unitno, *) "    xmax = " // num2str(xmax) // ","
+    write(unitno, *) "    ymin = " // num2str(ymin) // ","
+    write(unitno, *) "    ymax = " // num2str(ymax) // ","
+    write(unitno, *) "    title = {" // title // "}]"
+    write(unitno, *) ""
+    write(unitno, *) ""
+    write(unitno, *) "\addplot3 [surf, fill = white] table {" // dat // "};"
+    write(unitno, *) ""
+    write(unitno, *) ""
+    write(unitno, *) "\end{axis}"
+
+end subroutine surf_plot
+
 subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, legend_type, &
         opcolor, oplinestyle, opmarker)
     integer, intent(in) :: unitno, nj
@@ -682,6 +948,43 @@ subroutine write_dat(x, y, ni, nj, unitdat, fpath, dat)
     end do
     close(unitdat)
 end subroutine write_dat
+
+subroutine write_surf_dat(data, unitdat, nx, fpath, dat)
+    real(wp), intent(in) :: data(:, :)
+    integer, intent(in) :: unitdat, nx
+    character(len=*), intent(in) :: fpath, dat
+    integer :: ni, i, j
+
+    ni = size(data, 1)
+
+    ! Write data to a temporary file
+    open(unitdat,file=trim(fpath) // trim(dat),status='unknown')
+    do i = 1, ni
+        write(unitdat,'(F15.9)',advance='no') data(i, 1)
+        write(unitdat,'(F15.9)',advance='no') data(i, 2)
+        write(unitdat,'(F15.9)',advance='no') data(i, 3)
+        write(unitdat,*)
+        if (mod(i, nx) .eq. 0) then
+            write(unitdat,*)
+        endif
+    end do
+    close(unitdat)
+
+    !! Write data to a temporary file
+    !open(unitdat,file='',status='unknown')
+    !do i = 1,bknum*knum
+    !    write(unitdat,'(F15.9)',advance='no') data(i, 1)
+    !    write(unitdat,'(F15.9)',advance='no') data(i, 2)
+    !    write(unitdat,'(F15.9)',advance='no') data(i, 3)
+    !    write(unitdat,*)
+    !    if (mod(i, knum) .eq. 0) then
+    !        write(unitdat,*)
+    !    endif
+    !end do
+    !close(unitdat)
+
+
+end subroutine write_surf_dat
 
 subroutine decompose_name(fname, fpath, ftype, name)
 
