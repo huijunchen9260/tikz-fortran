@@ -120,7 +120,7 @@ subroutine surf_plot_xy2(x, y, z, title, xlabel, ylabel, zlabel, colormap, view,
 
     !if (nx == nz2 .and. ny == nz1) error stop 'switch the grid of x and y'
 
-    if (nz1*nz2*8.0_wp*3.0_wp > total_mem) error stop 'the size of z is too big'
+    !if (nz1*nz2*8.0_wp*3.0_wp > total_mem) error stop 'the size of z is too big'
 
     allocate(xmesh(nx, ny), source = 0.0_wp)
     allocate(ymesh(nx, ny), source = 0.0_wp)
@@ -273,11 +273,33 @@ subroutine surf_plot_xy2(x, y, z, title, xlabel, ylabel, zlabel, colormap, view,
     ymin = minval(y)
     ymax = maxval(y)
 
-    call write_preamble(colorvec, colorname, unitno, fpath, tikz)
 
-    call surf_plot(unitno, fpath, tikz, dat, xmin, xmax, ymin, ymax, &
-            vview, cmp, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
-            opcolor, oplinestyle, opmarker)
+    if (isGroupPlot) then
+        if (fig_count .eq. 1) then
+            groupName = tikz
+            groupPath = fpath
+            groupFName = fname
+            groupType = ftype
+            write(*, *) 'Groupplot names: ', trim(fpath) // trim(fname)
+            call write_preamble(colorvec, colorname, unitno, fpath, tikz)
+            call multi_plot_start(unitno)
+        endif
+        call surf_multi_plot(unitno, fpath, tikz, dat, xmin, xmax, ymin, ymax, &
+                vview, cmp, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+                opcolor, oplinestyle, opmarker)
+        if (fig_count < fig_max) then
+            fig_count = fig_count + 1
+            return
+        else
+            call multi_plot_end(unitno)
+        endif
+    else
+        call write_preamble(colorvec, colorname, unitno, fpath, tikz)
+        call surf_single_plot(unitno, fpath, tikz, dat, xmin, xmax, ymin, ymax, &
+                vview, cmp, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+                opcolor, oplinestyle, opmarker)
+    endif
+
 
     call write_finale(unitno)
 
@@ -852,7 +874,37 @@ subroutine single_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
 
 end subroutine single_plot
 
-subroutine surf_plot(unitno, fpath, tikz, dat, xmin, xmax, ymin, ymax, &
+subroutine surf_multi_plot(unitno, fpath, tikz, dat, xmin, xmax, ymin, ymax, &
+        view, colormap, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
+        opcolor, oplinestyle, opmarker)
+
+    integer, intent(in) :: unitno, view(2)
+    character(len=*), intent(in) :: fpath, tikz, dat
+    character(len=*), intent(in) :: title, xlb, ylb, colormap
+    character(len=:), dimension(:), allocatable, intent(in) :: colorname
+    character(len=*), intent(in) :: legend_type, legend_loc
+    character(len=*), dimension(:), intent(in) :: legendvec, opcolor, oplinestyle, opmarker
+    real(wp), intent(in) :: xmin, xmax, ymin, ymax
+    integer :: j
+
+    write(unitno, *) "\nextgroupplot["
+    write(unitno, *) "    sciclean,"
+    write(unitno, *) "    xlabel = {" // xlb // "},"
+    write(unitno, *) "    ylabel = {" // ylb // "},"
+    write(unitno, *) "    colormap/" // colormap //","
+    write(unitno, *) "    colorbar,"
+    write(unitno, *) "    view={" // num2str(view(1)) // "}{" // num2str(view(2)) // "},"
+    write(unitno, *) "    xmin = " // num2str(xmin) // ","
+    write(unitno, *) "    xmax = " // num2str(xmax) // ","
+    write(unitno, *) "    ymin = " // num2str(ymin) // ","
+    write(unitno, *) "    ymax = " // num2str(ymax) // ","
+    write(unitno, *) "    title = {" // title // "}]"
+    write(unitno, *) ""
+    write(unitno, *) "\addplot3 [surf, fill = white] table {" // dat // "};"
+    write(unitno, *) ""
+end subroutine surf_multi_plot
+
+subroutine surf_single_plot(unitno, fpath, tikz, dat, xmin, xmax, ymin, ymax, &
         view, colormap, colorname, title, xlb, ylb, legendvec, legend_type, legend_loc, &
         opcolor, oplinestyle, opmarker)
 
@@ -884,7 +936,7 @@ subroutine surf_plot(unitno, fpath, tikz, dat, xmin, xmax, ymin, ymax, &
     write(unitno, *) ""
     write(unitno, *) "\end{axis}"
 
-end subroutine surf_plot
+end subroutine surf_single_plot
 
 subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, legend_type, &
         opcolor, oplinestyle, opmarker)
@@ -1361,6 +1413,7 @@ integer function get_os_type() result(r)
 end function get_os_type
 
 subroutine meshgrid(x,y,xgv,ygv, ierr)
+    !! taken from ogpf
     !..............................................................................
     !meshgrid generate mesh grid over a rectangular domain of [xmin xmax, ymin, ymax]
     ! Inputs:
