@@ -115,6 +115,39 @@ call groupplot          !! stop the groupplot
 ```
 
 
+### Object interface: additions
+
+The `TikzPlot` object (`call plt%init('name.tex')`, setters, `call plt%save()`) also accepts:
+
+| Call | Effect |
+|---|---|
+| `plt%colors('blue, orange')`, `plt%linestyles('solid, dashed')`, `plt%mark('*, o')` | per-series colour, line style and marker (comma separated) |
+| `plt%band(xlo, xhi, color [, label])`, `plt%band_opacity(val)` | shaded vertical band; a label adds a legend entry |
+| `plt%vlines('x1,x2')`, `plt%vlabels('l1,l2')` | gray dashed vertical marks with optional labels |
+| `plt%xlog(.true.)` | logarithmic x axis |
+| `plt%histogram()` | overlaid histograms from bin edges `x` (n+1) and bin masses `y(:, j)` |
+| `plt%legend_pos('below' \| 'center left' \| 'center right' \| any pgfplots position)` | legend placement |
+
+Group plots have persistent switches, set after `call groupplot(r, c)`:
+`groupplot_panel_size(width, height)`, `groupplot_spacing(horizontal, vertical)`, `groupplot_font(...)`,
+`groupplot_smooth(.true.)` and `groupplot_marksize('1.6pt')`.
+
+### Shared style settings
+
+`call tikz_style(...)` sets the look and behaviour of every later figure. All arguments are optional.
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `linewidth` | `'thick'` | width of data lines |
+| `yy_legend_font` | `''` | legend font of dual-axis plots |
+| `engine` | `'latexmk'` | `'latexmk'` (pdfLaTeX), `'pdflatex'` or `'lualatex'` |
+| `open_figures` | `.true.` | open each PDF after compiling; the environment variable `TIKZ_OPEN_FIGURES=0` or `1` overrides it |
+| `stop_on_error` | `.false.` | `error stop` when a figure fails to compile |
+| `border` | none | standalone border, e.g. `'6pt'` |
+| `precision` | `3` | tick-label number precision |
+| `legend_below_yshift`, `legend_below_columns`, `legend_below_font` | `-0.22`, `3`, `'axis'` | placement of a legend put `'below'`; `0` columns is automatic |
+| `legend_box` | `.false.` | boxed white legend for in-axis legends |
+
 ## PGF/Tikz templated used
 
 The `Sloped` section of template comes from [stack overflow](https://tex.stackexchange.com/a/184242), which allows me to put legend along the slope at the function.
@@ -236,3 +269,7 @@ Sloped/.code = {
 
 Run `fpm run --example` or `gfortran -o run src/tikz_module.F90 example/example.f90 && ./run ` to see examples.
 
+## License
+
+MIT, see [LICENSE](LICENSE). The routine `get_os_type` is taken from
+[fpm](https://github.com/fortran-lang/fpm) (MIT License, Copyright (c) 2020 fpm contributors).

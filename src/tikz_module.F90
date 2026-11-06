@@ -1,3 +1,5 @@
+! SPDX-License-Identifier: MIT
+! Copyright (c) 2024-2026 Hui-Jun Chen. See the LICENSE file.
 module tikz_module
 
 !! Not sure whether ifport library is necessary
@@ -14,7 +16,8 @@ implicit none
 private
 ! public :: tikz, meshgrid, groupplot, surf
 ! Add to the top of the module
-public :: tikz, meshgrid, groupplot, surf, tikz_yy
+public :: tikz, meshgrid, groupplot, groupplot_spacing, groupplot_panel_size, groupplot_font, groupplot_smooth, groupplot_marksize, surf, tikz_yy
+public :: tikz_style
 public :: TikzBase, TikzPlot, TikzSurf
 
 
@@ -27,6 +30,20 @@ integer, parameter :: OS_SOLARIS = 5
 integer, parameter :: OS_FREEBSD = 6
 integer, parameter :: OS_OPENBSD = 7
 
+! --- Figure layout & style: single source of truth ---------------------
+! Consumed by write_preamble (panel size + fonts) and multi_plot_start
+! (group spacing). The dual-axis overlay inherits the panel size, so this
+! is the ONLY place panel geometry and fonts are defined. Change here to
+! restyle every figure at once (e.g. bump FONT_AXIS to \small for slides).
+character(len=*), parameter :: PANEL_W_GROUP  = "5cm"            ! panel width inside a groupplot
+character(len=*), parameter :: PANEL_W_SINGLE = "9cm"            ! width of a single (non-group) plot
+character(len=*), parameter :: PANEL_H        = "5cm"            ! panel height (group & single)
+character(len=*), parameter :: SEP_H          = "3.2cm"          ! groupplot horizontal separation
+character(len=*), parameter :: SEP_V          = "2.4cm"          ! groupplot vertical separation
+character(len=*), parameter :: FONT_AXIS      = "\footnotesize"  ! base font, axis labels, legend
+character(len=*), parameter :: FONT_TICK      = "\scriptsize"    ! tick labels
+character(len=*), parameter :: FONT_TITLE     = "\small\bfseries"! panel titles
+
 interface tikz
     module procedure tikz_plot_y, tikz_plot_y2, tikz_plot_xy, tikz_plot_xy2
 end interface tikz
@@ -34,6 +51,18 @@ end interface tikz
 interface groupplot
     module procedure groupplot_start, groupplot_stop
 end interface groupplot
+
+interface groupplot_spacing
+    module procedure groupplot_spacing_set
+end interface groupplot_spacing
+
+interface groupplot_panel_size
+    module procedure groupplot_panel_size_set
+end interface groupplot_panel_size
+
+interface groupplot_font
+    module procedure groupplot_font_set
+end interface groupplot_font
 
 interface surf
     module procedure surf_plot_xy2
@@ -78,12 +107,24 @@ type, public, extends(TikzBase) :: TikzPlot
     real(wp), allocatable :: y2(:, :)
 
     character(len=:), allocatable :: legend_, color_, mark_
+    character(len=:), allocatable :: colors_, linestyles_
     character(len=:), allocatable :: ylabel_right_
     character(len=:), allocatable :: legend_pos_
     real(wp), allocatable :: xlim_(:)
     real(wp), allocatable :: ylim_(:)
     real(wp), allocatable :: y2lim_(:)
+    character(len=:), allocatable :: vlines_, vlabels_   ! vertical marks: x values and labels, comma-separated
+    logical :: xlog_ = .false.                           ! logarithmic x axis (xmode=log)
     logical :: is_dual = .false.
+    ! vertical shaded bands (e.g. financial regimes along the x axis):
+    ! [band_lo_, band_hi_] filled with band_color_ at band_opacity_; a
+    ! non-empty band_label_ adds an area legend entry, an empty one uses
+    ! forget plot so the band does not consume a legend slot
+    integer :: nband_ = 0
+    real(wp) :: band_lo_(16), band_hi_(16)
+    real(wp) :: band_opacity_ = 0.10_wp
+    character(len=32) :: band_color_(16)
+    character(len=120) :: band_label_(16)
 
 contains
     ! GENERIC INTERFACES: This is the magic that allows flexibility
@@ -97,18 +138,26 @@ contains
     procedure, private :: set_dual_data_mm
 
     procedure :: set_style
+    procedure :: band => add_band
+    procedure :: band_opacity => set_band_opacity
     procedure :: save => render_2d
+    procedure :: histogram => render_histogram
 
     ! Simple Setters
     procedure :: legend       => set_legend
     procedure :: legend_pos   => set_legend_pos_2d
     procedure :: color        => set_color
+    procedure :: colors       => set_colors
+    procedure :: linestyles   => set_linestyles
     procedure :: mark         => set_mark
     procedure :: ylabel_right => set_ylabel_right
     procedure :: y2label      => set_ylabel_right
     procedure :: xlim         => set_xlim
     procedure :: ylim         => set_ylim
     procedure :: y2lim         => set_y2lim
+    procedure :: vlines       => set_vlines
+    procedure :: vlabels      => set_vlabels
+    procedure :: xlog         => set_xlog
 end type TikzPlot
 
 type, public, extends(TikzBase) :: TikzSurf
@@ -141,10 +190,40 @@ character(len=255) :: opener
 logical :: isGroupPlot = .false.
 integer :: row_group = 0, col_group = 0
 integer :: fig_count, fig_max
+logical :: group_first_panel_dual = .false.
+character(len=:), allocatable :: group_hsep_override, group_vsep_override
+character(len=:), allocatable :: group_pw_override, group_ph_override
+character(len=:), allocatable :: font_axis_override, font_tick_override, font_title_override
+logical :: smooth_override = .false.   ! groupplot_smooth: draw lines with pgfplots 'smooth'
+character(len=:), allocatable :: marksize_override   ! groupplot_marksize: pgfplots 'mark size' for marked lines
+! --- tikz_style: look and behaviour shared by every figure. These were hard-coded
+!     differently in project copies of this module; a project sets its own with one
+!     call tikz_style(...) before plotting. Defaults are the long-standing behaviour.
+character(len=32) :: style_linewidth            = 'thick'    ! width of data lines (tikz / groupplot panels)
+character(len=32) :: style_yy_legend_font       = ''         ! legend font of dual-axis (yy) plots, '' = inherit
+character(len=16) :: style_engine               = 'latexmk'  ! 'latexmk' (pdfLaTeX), 'pdflatex' or 'lualatex'
+logical           :: style_open_figures         = .true.     ! open each compiled PDF in the system viewer
+logical           :: style_stop_on_error        = .false.    ! error stop when a figure fails to compile
+character(len=16) :: style_border               = ''         ! standalone border, e.g. '6pt' ('' = none)
+integer           :: style_precision            = 3          ! tick-label number precision
+real(wp)          :: style_legend_below_yshift  = -0.22_wp   ! vertical position of a 'below' legend
+integer           :: style_legend_below_columns = 3          ! columns of a 'below' legend; 0 = automatic
+character(len=8)  :: style_legend_below_font    = 'axis'     ! 'axis' or 'tick' font for a 'below' legend
+logical           :: style_legend_box           = .false.    ! boxed white legend in tick font for in-axis legends
 character(len=:), allocatable :: groupName, groupPath, groupFName, groupType
+! vertical marks of the plot being written (set from the options of tikz_plot_xy2, cleared after use)
+character(len=:), dimension(:), allocatable :: opt_vlines, opt_vlabels
+character(len=8) :: opt_xmode = ''                     ! 'log' for a logarithmic x axis (option 'xmode: log')
 
 !! the unit of main_memory in texmf.cnf is a "word"? 1 word is 4 bytes
 real(wp) :: total_mem = 3000000.0_wp/4.0_wp
+
+!! pending shaded bands for the NEXT axis written by multi_plot / single_plot
+!! (set by render_2d just before it calls tikz_plot_xy2, cleared after use)
+integer :: pend_nband = 0
+real(wp) :: pend_band_lo(16), pend_band_hi(16), pend_band_opacity = 0.10_wp
+character(len=32) :: pend_band_color(16)
+character(len=120) :: pend_band_label(16)
 
 contains
 
@@ -175,6 +254,10 @@ end subroutine init_base
 
 subroutine destroy_obj(self)
     class(TikzBase), intent(inout) :: self
+    select type (self)
+    type is (TikzPlot)
+        self%nband_ = 0
+    end select
 
     if (allocated(self%filename_)) deallocate(self%filename_)
     if (allocated(self%title_   )) deallocate(self%title_)
@@ -189,6 +272,8 @@ subroutine destroy_obj(self)
 
         if (allocated(self%legend_))       deallocate(self%legend_)
         if (allocated(self%color_))        deallocate(self%color_)
+        if (allocated(self%colors_))       deallocate(self%colors_)
+        if (allocated(self%linestyles_))   deallocate(self%linestyles_)
         if (allocated(self%mark_))         deallocate(self%mark_)
         if (allocated(self%ylabel_right_)) deallocate(self%ylabel_right_)
         if (allocated(self%legend_pos_))   deallocate(self%legend_pos_)
@@ -196,6 +281,8 @@ subroutine destroy_obj(self)
         if (allocated(self%xlim_))         deallocate(self%xlim_)
         if (allocated(self%ylim_))         deallocate(self%ylim_)
         if (allocated(self%y2lim_))        deallocate(self%y2lim_)
+        if (allocated(self%vlines_))       deallocate(self%vlines_)
+        if (allocated(self%vlabels_))      deallocate(self%vlabels_)
 
         self%is_dual = .false.
 
@@ -355,10 +442,47 @@ subroutine set_color(self, val)
     self%color_ = val
 end subroutine set_color
 
+subroutine set_colors(self, val)
+    class(TikzPlot), intent(inout) :: self
+    character(len=*), intent(in) :: val
+    self%colors_ = val
+end subroutine set_colors
+
+subroutine set_linestyles(self, val)
+    class(TikzPlot), intent(inout) :: self
+    character(len=*), intent(in) :: val
+    self%linestyles_ = val
+end subroutine set_linestyles
+
+! vertical marks: comma-separated x values, and (optionally) their labels, drawn after the lines
+subroutine set_vlines(self, val)
+    class(TikzPlot), intent(inout) :: self
+    character(len=*), intent(in) :: val
+    self%vlines_ = val
+end subroutine set_vlines
+
+subroutine set_vlabels(self, val)
+    class(TikzPlot), intent(inout) :: self
+    character(len=*), intent(in) :: val
+    self%vlabels_ = val
+end subroutine set_vlabels
+
+subroutine set_xlog(self, val)
+    class(TikzPlot), intent(inout) :: self
+    logical, intent(in) :: val
+    self%xlog_ = val
+end subroutine set_xlog
+
+! per-series markers, comma separated ('*, o'); 'true' uses the default marker cycle.
+! ';' is accepted as a separator too (it would otherwise end the option).
 subroutine set_mark(self, val)
     class(TikzPlot), intent(inout) :: self
     character(len=*), intent(in) :: val
+    integer :: i
     self%mark_ = val
+    do i = 1, len(self%mark_)
+        if (self%mark_(i:i) == ';') self%mark_(i:i) = ','
+    end do
 end subroutine set_mark
 
 subroutine set_ylabel_right(self, val)
@@ -366,6 +490,62 @@ subroutine set_ylabel_right(self, val)
     character(len=*), intent(in) :: val
     self%ylabel_right_ = val
 end subroutine set_ylabel_right
+
+! --- Shaded vertical band [xlo, xhi]; color is a preamble color name
+!     (blue, orange, purple, yellow, green, light-blue, red) or any xcolor
+!     expression; label optional (empty -> forget plot)
+subroutine add_band(self, xlo, xhi, color, label)
+    class(TikzPlot), intent(inout) :: self
+    real(wp), intent(in) :: xlo, xhi
+    character(len=*), intent(in) :: color
+    character(len=*), intent(in), optional :: label
+    if (self%nband_ >= 16) return
+    self%nband_ = self%nband_ + 1
+    self%band_lo_(self%nband_) = xlo
+    self%band_hi_(self%nband_) = xhi
+    self%band_color_(self%nband_) = color
+    self%band_label_(self%nband_) = ''
+    if (present(label)) self%band_label_(self%nband_) = label
+end subroutine add_band
+
+subroutine set_band_opacity(self, val)
+    class(TikzPlot), intent(inout) :: self
+    real(wp), intent(in) :: val
+    self%band_opacity_ = val
+end subroutine set_band_opacity
+
+! emit the pending bands into the axis being written; bands are drawn
+! first so the data lines sit on top
+subroutine write_pending_bands(unitno, ymin, ymax)
+    integer, intent(in) :: unitno
+    real(wp), intent(in) :: ymin, ymax
+    integer :: b
+    character(len=:), allocatable :: extra
+    do b = 1, pend_nband
+        if (len_trim(pend_band_label(b)) > 0) then
+            extra = ''
+        else
+            extra = ', forget plot'
+        endif
+        write(unitno, *) "\addplot[area legend, draw=none, fill=" // trim(pend_band_color(b)) // &
+            ", fill opacity=" // num2str(pend_band_opacity) // trim(extra) // "] coordinates {(" // &
+            num2str(pend_band_lo(b)) // "," // num2str(ymin) // ") (" // &
+            num2str(pend_band_lo(b)) // "," // num2str(ymax) // ") (" // &
+            num2str(pend_band_hi(b)) // "," // num2str(ymax) // ") (" // &
+            num2str(pend_band_hi(b)) // "," // num2str(ymin) // ")} \closedcycle;"
+        if (len_trim(pend_band_label(b)) > 0) &
+            write(unitno, *) "\addlegendentry{" // trim(pend_band_label(b)) // "}"
+    enddo
+    pend_nband = 0
+end subroutine write_pending_bands
+
+logical function pending_band_legend()
+    integer :: b
+    pending_band_legend = .false.
+    do b = 1, pend_nband
+        if (len_trim(pend_band_label(b)) > 0) pending_band_legend = .true.
+    enddo
+end function pending_band_legend
 
 subroutine render_2d(self)
     class(TikzPlot), intent(inout) :: self
@@ -402,6 +582,32 @@ subroutine render_2d(self)
         if (len_trim(opts_str) > 0) opts_str = trim(opts_str) // "; "
         opts_str = trim(opts_str) // "y2min: " // num2str(self%y2lim_(1)) // &
                    "; y2max: " // num2str(self%y2lim_(2))
+    end if
+
+    ! 5. Per-line colors / linestyles (comma-separated; parsed by the renderer)
+    if (allocated(self%colors_)) then
+        if (len_trim(opts_str) > 0) opts_str = trim(opts_str) // "; "
+        opts_str = trim(opts_str) // "color: " // self%colors_
+    end if
+    if (allocated(self%linestyles_)) then
+        if (len_trim(opts_str) > 0) opts_str = trim(opts_str) // "; "
+        opts_str = trim(opts_str) // "linestyle: " // self%linestyles_
+    end if
+    if (allocated(self%mark_)) then
+        if (len_trim(opts_str) > 0) opts_str = trim(opts_str) // "; "
+        opts_str = trim(opts_str) // "marker: " // self%mark_
+    end if
+    if (allocated(self%vlines_)) then
+        if (len_trim(opts_str) > 0) opts_str = trim(opts_str) // "; "
+        opts_str = trim(opts_str) // "vlines: " // self%vlines_
+    end if
+    if (allocated(self%vlabels_)) then
+        if (len_trim(opts_str) > 0) opts_str = trim(opts_str) // "; "
+        opts_str = trim(opts_str) // "vlabels: " // self%vlabels_
+    end if
+    if (self%xlog_) then
+        if (len_trim(opts_str) > 0) opts_str = trim(opts_str) // "; "
+        opts_str = trim(opts_str) // "xmode: log"
     end if
 
 
@@ -512,16 +718,180 @@ subroutine render_2d(self)
 
     else
         ! Single Axis Plot (Standard)
-        call tikz_plot_xy2(self%x, self%y, &
-                  name    = self%filename_, &
-                  title   = self%title_, &
-                  xlabel  = self%xlabel_, &
-                  ylabel  = self%ylabel_, &
-                  legend  = self%legend_, &
-                  options = trim(opts_str))
+        pend_nband = self%nband_
+        if (self%nband_ > 0) then
+            pend_band_lo(1:self%nband_) = self%band_lo_(1:self%nband_)
+            pend_band_hi(1:self%nband_) = self%band_hi_(1:self%nband_)
+            pend_band_color(1:self%nband_) = self%band_color_(1:self%nband_)
+            pend_band_label(1:self%nband_) = self%band_label_(1:self%nband_)
+            pend_band_opacity = self%band_opacity_
+        endif
+        if (allocated(self%legend_)) then
+            call tikz_plot_xy2(self%x, self%y, &
+                      name    = self%filename_, &
+                      title   = self%title_, &
+                      xlabel  = self%xlabel_, &
+                      ylabel  = self%ylabel_, &
+                      legend  = self%legend_, &
+                      options = trim(opts_str))
+        else
+            call tikz_plot_xy2(self%x, self%y, &
+                      name    = self%filename_, &
+                      title   = self%title_, &
+                      xlabel  = self%xlabel_, &
+                      ylabel  = self%ylabel_, &
+                      options = trim(opts_str))
+        end if
+        ! bands are consumed by the save: a reused object starts clean
+        self%nband_ = 0
+        pend_nband = 0
     end if
 
 end subroutine render_2d
+
+subroutine render_histogram(self)
+    ! Render pre-binned probability masses as overlaid PGFPlots histograms.
+    !
+    ! Input convention:
+    !   self%x       contains nbins+1 common bin edges
+    !   self%y(:,j)  contains the mass in each bin for series j; the final
+    !                row is ignored by `ybar interval` and should be zero.
+    class(TikzPlot), intent(inout) :: self
+
+    integer :: unitno, unitdat, j, ni, nj
+    real(wp) :: xmin, xmax, ymin, ymax
+    character(len=:), allocatable :: palette, cnames
+    character(len=3) :: ftype
+    character(len=:), allocatable :: fname, fpath, tikz, dat
+    character(len=:), allocatable :: plot_title, xlb, ylb, legend_pos
+    character(len=:), allocatable :: colorvec(:), colorname(:)
+    character(len=:), allocatable :: legendvec(:), series_colors(:)
+
+    if (.not. allocated(self%x) .or. .not. allocated(self%y)) then
+        error stop "TikzPlot%histogram: call set_data before histogram"
+    end if
+
+    ni = size(self%x)
+    nj = size(self%y, 2)
+    if (ni < 2 .or. size(self%y, 1) /= ni) then
+        error stop "TikzPlot%histogram: x must be nbins+1 edges and y must have matching rows"
+    end if
+
+    palette = "0072BD; D95319; 7E2F8E; EDB120; 77AC30; 4DBEEE; A2142F"
+    cnames = "blue; orange; purple; yellow; green; light-blue; red"
+    colorvec = decompose_str(palette, genLoc(palette, ';'))
+    colorname = decompose_str(cnames, genLoc(cnames, ';'))
+
+    if (allocated(self%colors_)) then
+        series_colors = decompose_str(self%colors_, genLoc(self%colors_, ';'))
+        if (size(series_colors) /= nj) then
+            error stop "TikzPlot%histogram: number of colors must equal number of series"
+        end if
+    else
+        allocate(character(len=100) :: series_colors(nj))
+        do j = 1, nj
+            series_colors(j) = colorname(mod(j - 1, size(colorname)) + 1)
+        end do
+    end if
+
+    if (allocated(self%legend_)) then
+        if (len_trim(self%legend_) > 0) then
+            legendvec = decompose_str(self%legend_, genLoc(self%legend_, ';'))
+            if (size(legendvec) /= nj) then
+                error stop "TikzPlot%histogram: number of legends must equal number of series"
+            end if
+        else
+            allocate(character(len=1) :: legendvec(0))
+        end if
+    else
+        allocate(character(len=1) :: legendvec(0))
+    end if
+
+    if (allocated(self%title_)) then
+        plot_title = self%title_
+    else
+        plot_title = ""
+    end if
+    if (allocated(self%xlabel_)) then
+        xlb = self%xlabel_
+    else
+        xlb = "$x$"
+    end if
+    if (allocated(self%ylabel_)) then
+        ylb = self%ylabel_
+    else
+        ylb = "probability"
+    end if
+    if (allocated(self%legend_pos_)) then
+        legend_pos = self%legend_pos_
+    else
+        legend_pos = "north east"
+    end if
+
+    xmin = self%x(1)
+    xmax = self%x(ni)
+    ymin = 0.0_wp
+    ymax = 1.10_wp * maxval(self%y(1:ni-1, :))
+    if (allocated(self%xlim_)) then
+        xmin = self%xlim_(1)
+        xmax = self%xlim_(2)
+    end if
+    if (allocated(self%ylim_)) then
+        ymin = self%ylim_(1)
+        ymax = self%ylim_(2)
+    end if
+    if (ymax <= ymin) ymax = ymin + 1.0_wp
+
+    call decompose_name(fname, fpath, ftype, self%filename_)
+    dat = trim(fname) // ".dat"
+    tikz = trim(fname) // ".tex"
+    unitno = 726
+    unitdat = 412
+    call write_dat(self%x, self%y, ni, nj, unitdat, fpath, dat)
+    call write_preamble(colorvec, colorname, unitno, fpath, tikz)
+
+    write(unitno, '(a)') "\begin{axis}["
+    write(unitno, '(a)') "    sciclean,"
+    write(unitno, '(a)') "    ybar interval,"
+    write(unitno, '(a,a,a)') "    xmin=", trim(num2str(xmin)), ","
+    write(unitno, '(a,a,a)') "    xmax=", trim(num2str(xmax)), ","
+    write(unitno, '(a,a,a)') "    ymin=", trim(num2str(ymin)), ","
+    write(unitno, '(a,a,a)') "    ymax=", trim(num2str(ymax)), ","
+    write(unitno, '(a)', advance='no') "    xtick={"
+    do j = 0, 5
+        if (j > 0) write(unitno, '(a)', advance='no') ","
+        write(unitno, '(a)', advance='no') &
+            trim(num2str(xmin + (xmax - xmin) * real(j, wp) / 5.0_wp))
+    end do
+    write(unitno, '(a)') "},"
+    write(unitno, '(a,a,a)') "    xlabel={", trim(xlb), "},"
+    write(unitno, '(a,a,a)') "    ylabel={", trim(ylb), "},"
+    if (len_trim(plot_title) > 0) then
+        write(unitno, '(a,a,a)') "    title={", trim(plot_title), "},"
+    end if
+    if (size(legendvec) > 0) then
+        write(unitno, '(a,a,a)') "    legend pos=", trim(legend_pos), ","
+        write(unitno, '(a)') "    legend style={legend cell align=left, draw=white!15!black},"
+    end if
+    write(unitno, '(a)') "]"
+
+    do j = 1, nj
+        write(unitno, '(a,a,a,a,a,i0,a,a,a)') &
+            "\addplot+[ybar interval, draw=", trim(series_colors(j)), &
+            ", fill=", trim(series_colors(j)), &
+            ", fill opacity=0.32] table [x index=0, y index=", j, &
+            "] {", trim(dat), "};"
+        if (j <= size(legendvec)) then
+            if (len_trim(legendvec(j)) > 0) then
+                write(unitno, '(a,a,a)') "\addlegendentry{", trim(legendvec(j)), "}"
+            end if
+        end if
+    end do
+
+    write(unitno, '(a)') "\end{axis}"
+    call write_finale(unitno)
+    call typeset(fpath, fname, tikz, .true.)
+end subroutine render_histogram
 
 
 ! --- 3D Methods ---
@@ -632,6 +1002,11 @@ subroutine groupplot_start(row, col)
     col_group = col
     fig_count = 1
     fig_max = row_group*col_group
+    group_first_panel_dual = .false.
+    if (allocated(group_hsep_override)) deallocate(group_hsep_override)
+    if (allocated(group_vsep_override)) deallocate(group_vsep_override)
+    if (allocated(group_pw_override)) deallocate(group_pw_override)
+    if (allocated(group_ph_override)) deallocate(group_ph_override)
     isGroupPlot = .true.
 end subroutine groupplot_start
 
@@ -640,8 +1015,171 @@ subroutine groupplot_stop
     col_group = 0
     fig_count = 1
     fig_max = 1
+    group_first_panel_dual = .false.
+    if (allocated(group_hsep_override)) deallocate(group_hsep_override)
+    if (allocated(group_vsep_override)) deallocate(group_vsep_override)
+    if (allocated(group_pw_override)) deallocate(group_pw_override)
+    if (allocated(group_ph_override)) deallocate(group_ph_override)
     isGroupPlot = .false.
 end subroutine groupplot_stop
+
+subroutine groupplot_spacing_set(horizontal, vertical)
+    character(len=*), intent(in), optional :: horizontal, vertical
+
+    if (allocated(group_hsep_override)) deallocate(group_hsep_override)
+    if (allocated(group_vsep_override)) deallocate(group_vsep_override)
+
+    if (present(horizontal)) then
+        if (len_trim(horizontal) > 0) group_hsep_override = trim(horizontal)
+    end if
+    if (present(vertical)) then
+        if (len_trim(vertical) > 0) group_vsep_override = trim(vertical)
+    end if
+end subroutine groupplot_spacing_set
+
+! Per-figure override of the groupplot panel size (width/height as TikZ
+! lengths, e.g. '7cm', '3.6cm'). Consumed by write_preamble; reset on the
+! next groupplot start/stop. The dual-axis overlay inherits this size.
+subroutine groupplot_panel_size_set(width, height)
+    character(len=*), intent(in), optional :: width, height
+
+    if (allocated(group_pw_override)) deallocate(group_pw_override)
+    if (allocated(group_ph_override)) deallocate(group_ph_override)
+
+    if (present(width)) then
+        if (len_trim(width) > 0) group_pw_override = trim(width)
+    end if
+    if (present(height)) then
+        if (len_trim(height) > 0) group_ph_override = trim(height)
+    end if
+end subroutine groupplot_panel_size_set
+
+! Per-figure runtime override of the axis/tick/title fonts (TeX size macros,
+! e.g. '\small'). Unlike panel size / spacing, fonts are NOT reset at group
+! boundaries: set once and they persist across every figure (deck-wide
+! "slide mode"); call with no args to revert all to default. Any omitted
+! argument reverts that slot to its FONT_* compile-time default.
+subroutine groupplot_font_set(axis, tick, title)
+    character(len=*), intent(in), optional :: axis, tick, title
+
+    if (allocated(font_axis_override))  deallocate(font_axis_override)
+    if (allocated(font_tick_override))  deallocate(font_tick_override)
+    if (allocated(font_title_override)) deallocate(font_title_override)
+
+    if (present(axis)) then
+        if (len_trim(axis) > 0) font_axis_override = trim(axis)
+    end if
+    if (present(tick)) then
+        if (len_trim(tick) > 0) font_tick_override = trim(tick)
+    end if
+    if (present(title)) then
+        if (len_trim(title) > 0) font_title_override = trim(title)
+    end if
+end subroutine groupplot_font_set
+
+! Persistent switch: when on, every line drawn by plotting() gets the pgfplots
+! 'smooth' key (spline through the data points). Off by default.
+subroutine groupplot_smooth(flag)
+    logical, intent(in) :: flag
+    smooth_override = flag
+end subroutine groupplot_smooth
+
+! Persistent 'mark size' (e.g. '1.4pt') applied to every marked line; '' resets.
+subroutine groupplot_marksize(val)
+    character(len=*), intent(in) :: val
+    if (allocated(marksize_override)) deallocate(marksize_override)
+    if (len_trim(val) > 0) marksize_override = trim(val)
+end subroutine groupplot_marksize
+
+! Persistent look and behaviour settings; every argument is optional and only the
+! ones given are changed. Call once before plotting (or between figures).
+!   linewidth             'thin', 'thick' (default), 'very thick', ...
+!   yy_legend_font        legend font of dual-axis plots, e.g. '\tiny' ('' = inherit)
+!   engine                'latexmk' (default, pdfLaTeX), 'pdflatex', 'lualatex'
+!   open_figures          open each PDF after compiling (default .true.;
+!                         the environment variable TIKZ_OPEN_FIGURES=0/1 overrides)
+!   stop_on_error         error stop if a figure fails to compile (default .false.)
+!   border                standalone border, e.g. '6pt' (default none)
+!   precision             tick-label number precision (default 3)
+!   legend_below_yshift   vertical position of a legend placed 'below' (default -0.22)
+!   legend_below_columns  its number of columns (default 3; 0 = automatic)
+!   legend_below_font     'axis' (default) or 'tick'
+!   legend_box            boxed white legend in tick font for in-axis legends (default .false.)
+subroutine tikz_style(linewidth, yy_legend_font, engine, open_figures, stop_on_error, border, precision, &
+                      legend_below_yshift, legend_below_columns, legend_below_font, legend_box)
+    character(len=*), intent(in), optional :: linewidth, yy_legend_font, engine, border, legend_below_font
+    logical,          intent(in), optional :: open_figures, stop_on_error, legend_box
+    integer,          intent(in), optional :: precision, legend_below_columns
+    real(wp),         intent(in), optional :: legend_below_yshift
+    if (present(linewidth))            style_linewidth            = linewidth
+    if (present(yy_legend_font))       style_yy_legend_font       = yy_legend_font
+    if (present(engine))               style_engine               = engine
+    if (present(open_figures))         style_open_figures         = open_figures
+    if (present(stop_on_error))        style_stop_on_error        = stop_on_error
+    if (present(border))               style_border               = border
+    if (present(precision))            style_precision            = precision
+    if (present(legend_below_yshift))  style_legend_below_yshift  = legend_below_yshift
+    if (present(legend_below_columns)) style_legend_below_columns = legend_below_columns
+    if (present(legend_below_font))    style_legend_below_font    = legend_below_font
+    if (present(legend_box))           style_legend_box           = legend_box
+end subroutine tikz_style
+
+! option fragments derived from the tikz_style settings
+function style_yy_legend_opt() result(s)
+    character(len=:), allocatable :: s
+    s = ''
+    if (len_trim(style_yy_legend_font) > 0) s = ', font=' // trim(style_yy_legend_font)
+end function style_yy_legend_opt
+
+function style_border_opt() result(s)
+    character(len=:), allocatable :: s
+    s = ''
+    if (len_trim(style_border) > 0) s = ',border=' // trim(style_border)
+end function style_border_opt
+
+function style_legend_below_at() result(s)
+    character(len=:), allocatable :: s
+    character(len=16) :: b
+    write(b, '(F8.2)') style_legend_below_yshift
+    s = trim(adjustl(b))
+end function style_legend_below_at
+
+integer function style_legend_below_ncol(n) result(nc)
+    integer, intent(in) :: n
+    if (style_legend_below_columns > 0) then
+        nc = style_legend_below_columns
+    else
+        nc = merge(2, min(3, n), n == 4)     ! automatic: 2x2 for four entries, else up to three
+    end if
+end function style_legend_below_ncol
+
+function style_legend_below_fontcmd() result(s)
+    character(len=:), allocatable :: s
+    if (trim(style_legend_below_font) == 'tick') then
+        s = cur_font_tick()
+    else
+        s = cur_font_axis()
+    end if
+end function style_legend_below_fontcmd
+
+! Current axis/tick/title font = runtime override if set, else FONT_* default.
+function cur_font_axis() result(s)
+    character(len=:), allocatable :: s
+    s = FONT_AXIS
+    if (allocated(font_axis_override)) s = font_axis_override
+end function cur_font_axis
+
+function cur_font_tick() result(s)
+    character(len=:), allocatable :: s
+    s = FONT_TICK
+    if (allocated(font_tick_override)) s = font_tick_override
+end function cur_font_tick
+
+function cur_font_title() result(s)
+    character(len=:), allocatable :: s
+    s = FONT_TITLE
+    if (allocated(font_title_override)) s = font_title_override
+end function cur_font_title
 
 ! ----------------------------------------------------------------------
 ! Wrapper: Takes 1D y1 and 1D y2, reshapes to matrices, calls base
@@ -823,6 +1361,12 @@ subroutine tikz_plot_yy(x, y1, y2, title, xlabel, ylabel1, ylabel2, &
                     ! endif
                 case ('marker')
                     opmarker = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                case ('vlines')
+                    opt_vlines = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                case ('vlabels')
+                    opt_vlabels = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                case ('xmode')
+                    opt_xmode = trim(adjustl(optmp(2)))
                 case ('xmin')
                     read(optmp(2), *) xmin
                     set_xmin = .true.
@@ -869,11 +1413,15 @@ subroutine tikz_plot_yy(x, y1, y2, title, xlabel, ylabel1, ylabel2, &
     if (present(title)) then; ti = title; else; ti = ''; endif
 
     ! Process Label 1 (Left Axis Legends)
-    if (present(label1) .and. len_trim(label1) > 0) then
-        l1_vec = decompose_str(label1, genLoc(label1, ';'))
-        ! Handle mismatch if user provides fewer labels than columns
-        if (size(l1_vec) < m1) then
-            ! Ideally, resize or handle error. Here we assume user matches or we truncate logic later
+    if (present(label1)) then
+        if (len_trim(label1) > 0) then
+            l1_vec = decompose_str(label1, genLoc(label1, ';'))
+            ! Handle mismatch if user provides fewer labels than columns
+            if (size(l1_vec) < m1) then
+                ! Ideally, resize or handle error. Here we assume user matches or we truncate logic later
+            endif
+        else
+            allocate(l1_vec(0))
         endif
     else
         allocate(l1_vec(m1))
@@ -883,8 +1431,12 @@ subroutine tikz_plot_yy(x, y1, y2, title, xlabel, ylabel1, ylabel2, &
     endif
 
     ! Process Label 2 (Right Axis Legends)
-    if (present(label2) .and. len_trim(label2) > 0) then
-        l2_vec = decompose_str(label2, genLoc(label2, ';'))
+    if (present(label2)) then
+        if (len_trim(label2) > 0) then
+            l2_vec = decompose_str(label2, genLoc(label2, ';'))
+        else
+            allocate(l2_vec(0))
+        endif
     else
         allocate(l2_vec(m2))
         do j = 1, m2
@@ -895,8 +1447,8 @@ subroutine tikz_plot_yy(x, y1, y2, title, xlabel, ylabel1, ylabel2, &
     ! ------------------------------------------ !
     ! Define Standard Palette & Styles           !
     ! ------------------------------------------ !
-    palette = '0072BD; D95319; EDB120; 7E2F8E; 77AC30; 4DBEEE; A2142F'
-    cnames = "blue; orange; yellow; purple; green; light-blue; red"
+    palette = '0072BD; D95319; 7E2F8E; EDB120; 77AC30; 4DBEEE; A2142F'
+    cnames = "blue; orange; purple; yellow; green; light-blue; red"
     colorvec = decompose_str(palette, genLoc(palette, ';'))
     colorname = decompose_str(cnames, genLoc(cnames, ';'))
 
@@ -910,9 +1462,23 @@ subroutine tikz_plot_yy(x, y1, y2, title, xlabel, ylabel1, ylabel2, &
     ! Initialize Styles       !
     ! ----------------------- !
     ! We allocate these for TOTAL lines (m1 + m2)
-    allocate(oplinestyle(tot_lines)); oplinestyle(:) = ''
-    allocate(opmarker(tot_lines)); opmarker(:) = ''
-    allocate(opcolor(tot_lines)); opcolor(:) = ''
+    if (.not. allocated(oplinestyle)) then
+        allocate(oplinestyle(tot_lines))
+        do j = 1, tot_lines
+            idx = mod(j, size(stylevec)); idx = merge(size(stylevec), idx, idx == 0)
+            oplinestyle(j) = stylevec(idx)
+        end do
+    end if
+    if (.not. allocated(opmarker)) then
+        allocate(opmarker(tot_lines)); opmarker(:) = ''
+    end if
+    if (.not. allocated(opcolor)) then
+        allocate(opcolor(tot_lines))
+        do j = 1, tot_lines
+            idx = mod(j, size(colorname)); idx = merge(size(colorname), idx, idx == 0)
+            opcolor(j) = colorname(idx)
+        end do
+    end if
     legend_pos = 'north east'
     legend_type = 'box'
 
@@ -926,19 +1492,7 @@ subroutine tikz_plot_yy(x, y1, y2, title, xlabel, ylabel1, ylabel2, &
         enddo
     endif
 
-    ! Set default colors (cycling through palette)
-    do j = 1, tot_lines
-        idx = mod(j, size(colorname))
-        idx = merge(size(colorname), idx, idx == 0)
-        opcolor(j) = colorname(idx)
-    enddo
-
-    ! Set default linestyles
-    do j = 1, tot_lines
-        idx = mod(j, size(stylevec))
-        idx = merge(size(stylevec), idx, idx == 0)
-        oplinestyle(j) = stylevec(idx)
-    enddo
+    ! (default colors/linestyles set above, only when not provided via options)
 
     ! ------------------------------------- !
     ! thread safe external file unit number !
@@ -953,17 +1507,29 @@ subroutine tikz_plot_yy(x, y1, y2, title, xlabel, ylabel1, ylabel2, &
     ! ------------------- !
     if (present(name)) then
         call decompose_name(fname, fpath, ftype, name)
-        dat = trim(fname) // '.dat'
+        if (isGroupPlot) then
+            dat = trim(fname) // "_" // trim(num2str(fig_count)) // '.dat'
+        else
+            dat = trim(fname) // '.dat'
+        endif
         tikz = trim(fname) // '.tex'
         isTmp = .false.
     else
-        ! (Assumed grouping logic same as original)
-        fpath = './'
-        fname = 'tikzplot' // trim(tmpChar5)
-        ftype = ''
-        dat = 'tikzdata' // trim(tmpChar5) // '_yy.dat'
-        tikz = 'tikzplot' // trim(tmpChar5) // '.tex'
-        isTmp = .true.
+        if (isGroupPlot) then
+            fpath = './'
+            fname = 'tikzplot' // trim(tmpChar5)
+            ftype = ''
+            dat = 'tikzdata' // trim(tmpChar5) // num2str(fig_count) // '_yy.dat'
+            tikz = 'tikzplot' // trim(tmpChar5) // '.tex'
+            isTmp = .true.
+        else
+            fpath = './'
+            fname = 'tikzplot' // trim(tmpChar5)
+            ftype = ''
+            dat = 'tikzdata' // trim(tmpChar5) // '_yy.dat'
+            tikz = 'tikzplot' // trim(tmpChar5) // '.tex'
+            isTmp = .true.
+        endif
     endif
 
     call set_opener()
@@ -995,111 +1561,118 @@ subroutine tikz_plot_yy(x, y1, y2, title, xlabel, ylabel1, ylabel2, &
     ! writing TeX content !
     ! ------------------- !
 
-    call write_preamble(colorvec, colorname, unitno, fpath, tikz)
-
-    ! --- AXIS 1 (Left Y-Axis) ---
-    write(unitno, '(a)') "\begin{axis}["
-    write(unitno, '(a)') "    sciclean,"
-    write(unitno, '(a)') "    scale only axis,"
-    write(unitno, '(a)') "    axis y line*=left,"
-    write(unitno, '(a)') "    tick pos=left,"
-
-    ! Dashed top border
-    ! write(unitno, '(a)') "    after end axis/.code={\draw[dashed, gray!30] (rel axis cs:0,1) -- (rel axis cs:1,1);},"
-
-    ! Apply Boundaries (Axis 1)
-    write(unitno, '(a,a,a)') "    xmin=", trim(num2str(xmin)), ","
-    write(unitno, '(a,a,a)') "    xmax=", trim(num2str(xmax)), ","
-    write(unitno, '(a,a,a)') "    ymin=", trim(num2str(ymin)), ","
-    write(unitno, '(a,a,a)') "    ymax=", trim(num2str(ymax)), ","
-
-    ! Legend Styling
-    write(unitno, '(a,a)')     "    legend pos=", trim(legend_pos) // ","
-    write(unitno, '(a)')       "    legend style={legend cell align=left, align=left, draw=white!15!black},"
-
-    ! Axis Styling (Color based on first line of Y1 or black? Usually left axis takes color of first Y1)
-    write(unitno, '(a,a,a)') "    y axis line style={", trim(opcolor(1)), "},"
-    write(unitno, '(a,a,a)') "    yticklabel style={", trim(opcolor(1)), "},"
-    write(unitno, '(a,a,a)') "    ylabel style={", trim(opcolor(1)), "},"
-    write(unitno, '(a,a,a)') "    xlabel={", trim(xl), "},"
-    write(unitno, '(a,a,a)') "    ylabel={", trim(yl1), "},"
-    if (len_trim(ti) > 0) write(unitno, '(a,a,a)') "    title={", trim(ti), "},"
-    write(unitno, '(a)') "]"
-
-    ! --- PLOT LINES FOR Y1 (Left Axis) ---
-    ! Indices 1 to m1 in our color/style arrays
-    do j = 1, m1
-        ! Check column index. TikZ table uses 0-based or 1-based?
-        ! Typically 'x index=0'. Data file: X is col 0 (in PGFPlots speak if header=false, usually cols are 0,1,2...).
-        ! Fortran write puts spaces. PGFPlots read:
-        ! Col 0: x. Col 1: y1(1). Col j: y1(j).
-
-        write(unitno, '(a)', advance='no') "    \addplot[thick, " // trim(opcolor(j))
-        if (len_trim(oplinestyle(j)) > 0) write(unitno, '(a)', advance='no') "," // trim(oplinestyle(j))
-        if (len_trim(opmarker(j)) > 0)    write(unitno, '(a)', advance='no') ",mark=" // trim(opmarker(j))
-
-        ! x index = 0, y index = j
-        write(unitno, '(a,i0,a,a,a)') "] table [x index=0, y index=", j, "] {", trim(dat), "};"
-
-        ! Legend Entry
-        if (j <= size(l1_vec)) then
-             write(unitno, '(a,a,a)') "    \addlegendentry{", trim(l1_vec(j)), "}"
+    if (isGroupPlot) then
+        if (fig_count .eq. 1) then
+            group_first_panel_dual = .true.
+            groupName = tikz
+            groupPath = fpath
+            groupFName = fname
+            groupType = ftype
+            call write_preamble(colorvec, colorname, unitno, fpath, tikz)
+            call multi_plot_start(unitno)
         endif
-    enddo
 
-    ! --- FAKE LEGEND ENTRIES FOR Y2 (Right Axis) ---
-    ! We add \addlegendimage so they appear in the Left Axis legend box
-    ! Indices m1+1 to m1+m2
-    do j = 1, m2
-        idx = m1 + j
-        write(unitno, '(a)', advance='no') "    \addlegendimage{thick, " // trim(opcolor(idx))
-        if (len_trim(oplinestyle(idx)) > 0) write(unitno, '(a)', advance='no') "," // trim(oplinestyle(idx))
-        if (len_trim(opmarker(idx)) > 0)    write(unitno, '(a)', advance='no') ",mark=" // trim(opmarker(idx))
-        write(unitno, '(a)') "}"
+        call multi_plot_yy(unitno, fpath, dat, fig_count, xl, yl1, yl2, ti, &
+                           xmin, xmax, ymin, ymax, y2min, y2max, &
+                           l1_vec, l2_vec, opcolor, oplinestyle, opmarker, m1, m2, legend_pos)
 
-        if (j <= size(l2_vec)) then
-            write(unitno, '(a,a,a)') "    \addlegendentry{", trim(l2_vec(j)), "}"
+        if (fig_count < fig_max) then
+            fig_count = fig_count + 1
+            return
+        else
+            call multi_plot_end(unitno, groupPath)
         endif
-    enddo
+    else
+        call write_preamble(colorvec, colorname, unitno, fpath, tikz)
 
-    write(unitno, '(a)') "\end{axis}"
+        ! --- AXIS 1 (Left Y-Axis) ---
+        write(unitno, '(a)') "\begin{axis}["
+        write(unitno, '(a)') "    sciclean,"
+        write(unitno, '(a)') "    scale only axis,"
+        write(unitno, '(a)') "    axis y line*=left,"
+        write(unitno, '(a)') "    tick pos=left,"
 
-    ! --- AXIS 2 (Right Y-Axis) ---
-    write(unitno, '(a)') "\begin{axis}["
-    write(unitno, '(a)') "    sciclean,"
-    write(unitno, '(a)') "    scale only axis,"
-    write(unitno, '(a)') "    axis y line*=right,"
-    write(unitno, '(a)') "    axis x line=none,"
-    write(unitno, '(a)') "    grid=none,"
-    write(unitno, '(a)') "    axis background/.style={fill=none},"
-    write(unitno, '(a)') "    after end axis/.code={},"
+        ! Apply Boundaries (Axis 1)
+        write(unitno, '(a,a,a)') "    xmin=", trim(num2str(xmin)), ","
+        write(unitno, '(a,a,a)') "    xmax=", trim(num2str(xmax)), ","
+        write(unitno, '(a,a,a)') "    ymin=", trim(num2str(ymin)), ","
+        write(unitno, '(a,a,a)') "    ymax=", trim(num2str(ymax)), ","
 
-    ! Apply Boundaries (Axis 2)
-    write(unitno, '(a,a,a)') "    xmin=", trim(num2str(xmin)), ","
-    write(unitno, '(a,a,a)') "    xmax=", trim(num2str(xmax)), ","
-    write(unitno, '(a,a,a)') "    ymin=", trim(num2str(y2min)), ","
-    write(unitno, '(a,a,a)') "    ymax=", trim(num2str(y2max)), ","
+        ! Legend Styling
+        if (size(l1_vec) + size(l2_vec) > 0) then
+            write(unitno, '(a,a)')     "    legend pos=", trim(legend_pos) // ","
+            write(unitno, '(a)')       "    legend style={legend cell align=left, align=left, draw=white!15!black" // style_yy_legend_opt() // "},"
+        endif
 
-    ! Use color of the first line of Y2 for axis styling
-    write(unitno, '(a,a,a)') "    y axis line style={", trim(opcolor(m1+1)), "},"
-    write(unitno, '(a,a,a)') "    yticklabel style={", trim(opcolor(m1+1)), "},"
-    write(unitno, '(a,a,a)') "    ylabel style={", trim(opcolor(m1+1)), "},"
-    write(unitno, '(a,a,a)') "    ylabel={", trim(yl2), "},"
-    write(unitno, '(a)') "]"
+        ! Axis Styling
+        write(unitno, '(a,a,a)') "    y axis line style={", trim(opcolor(1)), "},"
+        write(unitno, '(a,a,a)') "    yticklabel style={", trim(opcolor(1)), "},"
+        write(unitno, '(a,a,a,a)') "    ylabel style={", trim(opcolor(1)), "},"
+        write(unitno, '(a,a,a)') "    xlabel={", trim(xl), "},"
+        write(unitno, '(a,a,a)') "    ylabel={", trim(yl1), "},"
+        if (len_trim(ti) > 0) write(unitno, '(a,a,a)') "    title={", trim(ti), "},"
+        write(unitno, '(a)') "]"
 
-    ! --- PLOT LINES FOR Y2 (Right Axis) ---
-    do j = 1, m2
-        idx = m1 + j
-        ! y index in file is m1 + j
+        do j = 1, m1
+            write(unitno, '(a)', advance='no') "    \addplot[thick, " // trim(opcolor(j))
+            if (len_trim(oplinestyle(j)) > 0) write(unitno, '(a)', advance='no') "," // trim(oplinestyle(j))
+            if (len_trim(opmarker(j)) > 0)    write(unitno, '(a)', advance='no') ",mark=" // trim(opmarker(j))
+            write(unitno, '(a,i0,a,a,a)') "] table [x index=0, y index=", j, "] {", trim(dat), "};"
 
-        write(unitno, '(a)', advance='no') "    \addplot[thick, " // trim(opcolor(idx))
-        if (len_trim(oplinestyle(idx)) > 0) write(unitno, '(a)', advance='no') "," // trim(oplinestyle(idx))
-        if (len_trim(opmarker(idx)) > 0)    write(unitno, '(a)', advance='no') ",mark=" // trim(opmarker(idx))
+            if (j <= size(l1_vec)) then
+                if (len_trim(l1_vec(j)) > 0) then
+                    write(unitno, '(a,a,a)') "    \addlegendentry{", trim(l1_vec(j)), "}"
+                endif
+            endif
+        enddo
 
-        write(unitno, '(a,i0,a,a,a)') "] table [x index=0, y index=", idx, "] {", trim(dat), "};"
-    enddo
+        do j = 1, m2
+            idx = m1 + j
+            write(unitno, '(a)', advance='no') "    \addlegendimage{thick, " // trim(opcolor(idx))
+            if (len_trim(oplinestyle(idx)) > 0) write(unitno, '(a)', advance='no') "," // trim(oplinestyle(idx))
+            if (len_trim(opmarker(idx)) > 0)    write(unitno, '(a)', advance='no') ",mark=" // trim(opmarker(idx))
+            write(unitno, '(a)') "}"
 
-    write(unitno, '(a)') "\end{axis}"
+            if (j <= size(l2_vec)) then
+                if (len_trim(l2_vec(j)) > 0) then
+                    write(unitno, '(a,a,a)') "    \addlegendentry{", trim(l2_vec(j)), "}"
+                endif
+            endif
+        enddo
+
+        write(unitno, '(a)') "\end{axis}"
+
+        ! --- AXIS 2 (Right Y-Axis) ---
+        write(unitno, '(a)') "\begin{axis}["
+        write(unitno, '(a)') "    sciclean,"
+        write(unitno, '(a)') "    scale only axis,"
+        write(unitno, '(a)') "    axis y line*=right,"
+        write(unitno, '(a)') "    axis x line=none,"
+        write(unitno, '(a)') "    grid=none,"
+        write(unitno, '(a)') "    axis background/.style={fill=none},"
+        write(unitno, '(a)') "    after end axis/.code={},"
+
+        write(unitno, '(a,a,a)') "    xmin=", trim(num2str(xmin)), ","
+        write(unitno, '(a,a,a)') "    xmax=", trim(num2str(xmax)), ","
+        write(unitno, '(a,a,a)') "    ymin=", trim(num2str(y2min)), ","
+        write(unitno, '(a,a,a)') "    ymax=", trim(num2str(y2max)), ","
+
+        write(unitno, '(a,a,a)') "    y axis line style={", trim(opcolor(m1+1)), "},"
+        write(unitno, '(a,a,a,a)') "    yticklabel style={", trim(opcolor(m1+1)), ", xshift=0.3em", "},"
+        write(unitno, '(a,a,a,a)') "    ylabel style={", trim(opcolor(m1+1)), "},"
+        write(unitno, '(a,a,a)') "    ylabel={", trim(yl2), "},"
+        write(unitno, '(a)') "]"
+
+        do j = 1, m2
+            idx = m1 + j
+            write(unitno, '(a)', advance='no') "    \addplot[thick, " // trim(opcolor(idx))
+            if (len_trim(oplinestyle(idx)) > 0) write(unitno, '(a)', advance='no') "," // trim(oplinestyle(idx))
+            if (len_trim(opmarker(idx)) > 0)    write(unitno, '(a)', advance='no') ",mark=" // trim(opmarker(idx))
+            write(unitno, '(a,i0,a,a,a)') "] table [x index=0, y index=", idx, "] {", trim(dat), "};"
+        enddo
+
+        write(unitno, '(a)') "\end{axis}"
+    endif
 
     call write_finale(unitno)
 
@@ -1107,12 +1680,20 @@ subroutine tikz_plot_yy(x, y1, y2, title, xlabel, ylabel1, ylabel2, &
     ! Compile and Execute !
     ! ------------------- !
 
-    call typeset(fpath, fname, tikz, .true.)
-
-    if (isTmp) then
-        call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1;')
+    if (isGroupPlot) then
+        call typeset(groupPath, groupFName, groupName, .true.)
+        if (isTmp) then
+            call execute_command_line(trim(opener) // ' ' // trim(groupPath) // trim(groupFName) // '.pdf > /dev/null 2>&1;')
+        else
+            call execute_command_line(trim(opener) // ' ' // trim(groupPath) // trim(groupFName) // '.pdf > /dev/null 2>&1 &')
+        endif
     else
-        call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1 &')
+        call typeset(fpath, fname, tikz, .true.)
+        if (isTmp) then
+            call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1;')
+        else
+            call execute_command_line(trim(opener) // ' ' // trim(fpath) // trim(fname) // '.pdf > /dev/null 2>&1 &')
+        endif
     endif
 
 end subroutine tikz_plot_yy
@@ -1226,13 +1807,13 @@ subroutine surf_plot_xy2(x, y, z, title, xlabel, ylabel, zlabel, colormap, view,
     ! Source: http://gnuplotting.org/matlab-colorbar-parula-with-gnuplot/index.html
     palette = '0072BD; ' // & ! blue
               'D95319; ' // & ! orange
-              'EDB120; ' // & ! yellow
               '7E2F8E; ' // & ! purple
+              'EDB120; ' // & ! yellow
               '77AC30; ' // & ! green
               '4DBEEE; ' // & ! light-blue
               'A2142F '       ! red
 
-    cnames = "blue; orange; yellow; purple; green; light-blue; red"
+    cnames = "blue; orange; purple; yellow; green; light-blue; red"
 
     colorvec = decompose_str(palette, genLoc(palette, ';'))
     colorname = decompose_str(cnames, genLoc(cnames, ';'))
@@ -1290,7 +1871,11 @@ subroutine surf_plot_xy2(x, y, z, title, xlabel, ylabel, zlabel, colormap, view,
 
     if (present(name)) then
         call decompose_name(fname, fpath, ftype, name)
-        dat = trim(fname) // '.dat'
+        if (isGroupPlot) then
+            dat = trim(fname) // "_" // trim(num2str(fig_count)) // '.dat'
+        else
+            dat = trim(fname) // '.dat'
+        end if
         tikz = trim(fname) // '.tex'
         isTmp = .false.
     else
@@ -1379,6 +1964,7 @@ subroutine surf_plot_xy2(x, y, z, title, xlabel, ylabel, zlabel, colormap, view,
 
     if (isGroupPlot) then
         if (fig_count .eq. 1) then
+            group_first_panel_dual = .false.
             groupName = tikz
             groupPath = fpath
             groupFName = fname
@@ -1394,7 +1980,7 @@ subroutine surf_plot_xy2(x, y, z, title, xlabel, ylabel, zlabel, colormap, view,
             fig_count = fig_count + 1
             return
         else
-            call multi_plot_end(unitno)
+            call multi_plot_end(unitno, groupPath)
         endif
     else
         call write_preamble(colorvec, colorname, unitno, fpath, tikz)
@@ -1469,6 +2055,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     integer :: ni, nj                                               ! dimension of x and y
     character(len=5) :: tmpChar5                                    ! tmp file name based on thread
     character(len=:), allocatable :: xlb                            ! local x label
+    character(len=:), allocatable :: ttl                            ! local title ('' when absent)
     character(len=:), allocatable :: ylb                            ! local y label
     character(len=:), allocatable :: le                             ! local legend
     character(len=:), allocatable :: fname                          ! name of the tex file
@@ -1496,6 +2083,8 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     set_xmax = .false.
     set_ymin = .false.
     set_ymax = .false.
+    if (allocated(opt_vlines)) deallocate(opt_vlines)
+    if (allocated(opt_vlabels)) deallocate(opt_vlabels)
 
 
     ! ---------------------- !
@@ -1510,6 +2099,12 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     ! Set default values !
     ! ------------------ !
 
+    ! an absent title must not reach the writers as a bare dummy (the hidden length is undefined)
+    if (present(title)) then
+        ttl = title
+    else
+        ttl = ''
+    end if
     if (present(xlabel)) then
         xlb = xlabel
     else
@@ -1524,16 +2119,17 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
 
     if (present(legend)) then
-        le = legend
-        legendvec = decompose_str(le, genLoc(le, ';'))
-        if (size(legendvec) .ne. nj) then
-            error stop "legend error: numbers of legends does not equal to numbers of columns on y"
+        if (len_trim(legend) > 0) then
+            le = legend
+            legendvec = decompose_str(le, genLoc(le, ';'))
+            if (size(legendvec) .ne. nj) then
+                error stop "legend error: numbers of legends does not equal to numbers of columns on y"
+            endif
+        else
+            allocate(legendvec(0))
         endif
     else
-        allocate(legendvec(nj))
-        do j = 1, nj, 1
-            legendvec(j) = "data" // num2str(j)
-        enddo
+        allocate(legendvec(0))
     endif
 
     ! -------------------- !
@@ -1544,13 +2140,13 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
     ! Source: http://gnuplotting.org/matlab-colorbar-parula-with-gnuplot/index.html
     palette = '0072BD; ' // & ! blue
               'D95319; ' // & ! orange
-              'EDB120; ' // & ! yellow
               '7E2F8E; ' // & ! purple
+              'EDB120; ' // & ! yellow
               '77AC30; ' // & ! green
               '4DBEEE; ' // & ! light-blue
               'A2142F '       ! red
 
-    cnames = "blue; orange; yellow; purple; green; light-blue; red"
+    cnames = "blue; orange; purple; yellow; green; light-blue; red"
 
     colorvec = decompose_str(palette, genLoc(palette, ';'))
     colorname = decompose_str(cnames, genLoc(cnames, ';'))
@@ -1627,6 +2223,12 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
                     endif
                 case ('marker')
                     opmarker = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                case ('vlines')
+                    opt_vlines = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                case ('vlabels')
+                    opt_vlabels = decompose_str(optmp(2),  genLoc(optmp(2), ','))
+                case ('xmode')
+                    opt_xmode = trim(adjustl(optmp(2)))
                 case ('xmin')
                     read(optmp(2), *) xmin
                     set_xmin = .true.
@@ -1687,7 +2289,9 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
         do j = 1, nj, 1
             opmarker(j) = 'false'
         enddo
-    else
+    else if (size(opmarker) /= nj .or. any(opmarker == 'true')) then
+        ! 'marker: true' (or a wrong count) -> default marker cycle;
+        ! explicit names such as 'marker: *,*,*' are kept as given
         deallocate(opmarker)
         allocate(opmarker(nj))
         do j = 1, nj, 1
@@ -1728,7 +2332,11 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
     if (present(name)) then
         call decompose_name(fname, fpath, ftype, name)
-        dat = trim(fname) // '.dat'
+        if (isGroupPlot) then
+            dat = trim(fname) // "_" // trim(num2str(fig_count)) // '.dat'
+        else
+            dat = trim(fname) // '.dat'
+        end if
         tikz = trim(fname) // '.tex'
         isTmp = .false.
     else
@@ -1763,6 +2371,7 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
     if (isGroupPlot) then
         if (fig_count .eq. 1) then
+            group_first_panel_dual = .false.
             groupName = tikz
             groupPath = fpath
             groupFName = fname
@@ -1772,19 +2381,25 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
             call multi_plot_start(unitno)
         endif
         call multi_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
-                colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_pos, &
+                colorvec, colorname, ttl, xlb, ylb, legendvec, legend_type, legend_pos, &
                 opcolor, oplinestyle, opmarker)
+        if (allocated(opt_vlines)) deallocate(opt_vlines)
+        if (allocated(opt_vlabels)) deallocate(opt_vlabels)
+        opt_xmode = ''
         if (fig_count < fig_max) then
             fig_count = fig_count + 1
             return
         else
-            call multi_plot_end(unitno)
+            call multi_plot_end(unitno, groupPath)
         endif
     else
         call write_preamble(colorvec, colorname, unitno, fpath, tikz)
         call single_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
-            colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_pos, &
+            colorvec, colorname, ttl, xlb, ylb, legendvec, legend_type, legend_pos, &
             opcolor, oplinestyle, opmarker)
+        if (allocated(opt_vlines)) deallocate(opt_vlines)
+        if (allocated(opt_vlabels)) deallocate(opt_vlabels)
+        opt_xmode = ''
     endif
 
     call write_finale(unitno)
@@ -1819,129 +2434,18 @@ subroutine tikz_plot_xy2(x, y, title, xlabel, ylabel, legend, name, options)
 
 end subroutine tikz_plot_xy2
 
-! subroutine write_preamble(colorvec, colorname, unitno, fpath, tikz)
-!     integer, intent(in) :: unitno
-!     character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
-!     character(len=*), intent(in) :: fpath, tikz
-!     integer :: j
-
-!     open(unitno, file=trim(fpath) // trim(tikz),status='unknown')
-!        write(unitno, *) "\documentclass[tikz]{standalone}"
-
-!        write(unitno, *) "\usepackage{tikz}"
-!        write(unitno, *) "\usepackage{pgfplots}"
-!        write(unitno, *) "\usetikzlibrary{decorations}"
-!        write(unitno, *) "\usetikzlibrary{decorations.pathreplacing, intersections, fillbetween}"
-!        write(unitno, *) "\usetikzlibrary{calc,positioning}"
-!        write(unitno, *) "\usetikzlibrary{plotmarks}"
-!        write(unitno, *) "\usetikzlibrary{pgfplots.groupplots, pgfplots.colormaps}"
-!        write(unitno, *) "\pgfplotsset{compat=newest, scale only axis, width = 9cm, height = 5cm}"
-
-!        ! write(unitno, *) "\pgfplotsset{sciclean/.style={axis lines=left,"
-!        ! write(unitno, *) "        grid=both,"
-!        ! write(unitno, *) "        major grid style={line width=.2pt,draw=gray!50, dashed},"
-!        ! write(unitno, *) "        axis x line shift=0.5em,"
-!        ! write(unitno, *) "        axis y line shift=0.5em,"
-!        ! write(unitno, *) "        axis line style={-,very thin},"
-!        ! write(unitno, *) "        axis background/.style={draw,ultra thin,gray},"
-!        ! write(unitno, *) "        tick align=outside,"
-!        ! write(unitno, *) "        xticklabel style={"
-!        ! write(unitno, *) "            /pgf/number format/fixed,"
-!        ! write(unitno, *) "            /pgf/number format/precision=2"
-!        ! write(unitno, *) "        },"
-!        ! write(unitno, *) "        yticklabel style={"
-!        ! write(unitno, *) "            /pgf/number format/fixed,"
-!        ! write(unitno, *) "            /pgf/number format/precision=2"
-!        ! write(unitno, *) "        },"
-!        ! write(unitno, *) "        scaled y ticks=false,"
-!        ! write(unitno, *) "        major tick length=2pt}}"
-
-
-!         ! --- Style Definition: sciclean ---
-!        write(unitno, *) "\pgfplotsset{"
-!        write(unitno, *) "    sciclean/.style={"
-!        write(unitno, *) "        font=\footnotesize,"
-!        write(unitno, *) "        axis background/.style={fill=white},"
-!        write(unitno, *) "        axis on top=false,"
-!        write(unitno, *) "        axis lines=left,"
-!        write(unitno, *) "        axis line style={-, black},"
-!        write(unitno, *) "        tick align=inside,"
-!        write(unitno, *) "        tick pos=both,"
-!        write(unitno, *) "        major tick length=0.15cm,"
-!        write(unitno, *) "        grid=major,"
-!        write(unitno, *) "        grid style={dashed, gray!30},"
-!        write(unitno, *) "        enlargelimits=false,"
-!        write(unitno, *) "        title style={font=\small\bfseries, yshift=0.5em},"
-!        write(unitno, *) "        label style={font=\footnotesize},"
-!        write(unitno, *) "        tick label style={font=\scriptsize},"
-!        write(unitno, *) "    }"
-!        write(unitno, *) "}"
-
-!        write(unitno, *) ""
-!        write(unitno, *) "% Create fake \onslide and other commands for standalone picture"
-!        write(unitno, *) "\usepackage{xparse}"
-!        write(unitno, *) "\NewDocumentCommand{\onslide}{s t+ d<>}{}"
-!        write(unitno, *) "\NewDocumentCommand{\only}{d<>}{}"
-!        write(unitno, *) "\NewDocumentCommand{\uncover}{d<>}{}"
-!        write(unitno, *) "\NewDocumentCommand{\visible}{d<>}{}"
-!        write(unitno, *) "\NewDocumentCommand{\invisible}{d<>}{}"
-!        write(unitno, *) ""
-!        write(unitno, *) "% ---------------------------------------------------------------------"
-!        write(unitno, *) "% Create sloped legend on the data line"
-!        write(unitno, *) "\makeatletter"
-!        write(unitno, *) "\tikzset{"
-!        write(unitno, *) "Sloped/.code = {"
-!        write(unitno, *) "\iftikz@fullytransformed% tikz.code.tex"
-!        write(unitno, *) "    \tikzset{sloped}"
-!        write(unitno, *) "\else"
-!        write(unitno, *) "    \pgfgettransformentries{\mya}{\myb}{\myc}{\myd}{\mys}{\myt}%"
-!        write(unitno, *) "    \tikzset{sloped, transform shape, rotate = {atan2(\myb,\mya)}}%"
-!        write(unitno, *) "\fi"
-!        write(unitno, *) "}"
-!        write(unitno, *) "}"
-!        write(unitno, *) "\makeatother"
-!        write(unitno, *) "% ---------------------------------------------------------------------"
-!        write(unitno, *) ""
-!        write(unitno, *) "% ---------------------------------------------------------------------"
-!        write(unitno, *) "% Coordinate extraction"
-!        write(unitno, *) "% #1: node name"
-!        write(unitno, *) "% #2: output macro name: x coordinate"
-!        write(unitno, *) "% #3: output macro name: y coordinate"
-!        write(unitno, *) "\newcommand{\Getxycoords}[3]{%"
-!        write(unitno, *) "    \pgfplotsextra{%"
-!        write(unitno, *) "        % using `\pgfplotspointgetcoordinates' stores the (axis)"
-!        write(unitno, *) "        % coordinates in `data point' which then can be called by"
-!        write(unitno, *) "        % `\pgfkeysvalueof' or `\pgfkeysgetvalue'"
-!        write(unitno, *) "        \pgfplotspointgetcoordinates{(#1)}%"
-!        write(unitno, *) "        % `\global' (a TeX macro and not a TikZ/PGFPlots one) allows to"
-!        write(unitno, *) "        % store the values globally"
-!        write(unitno, *) "         \global\pgfkeysgetvalue{/data point/x}{#2}%"
-!        write(unitno, *) "         \global\pgfkeysgetvalue{/data point/y}{#3}%"
-!        write(unitno, *) "     }%"
-!        write(unitno, *) "}"
-!        write(unitno, *) "% ---------------------------------------------------------------------"
-!        write(unitno, *) ""
-!        do j = 1, size(colorvec), 1
-!            write(unitno, *) "\definecolor{" // trim(colorname(j)) // "}{HTML}{" // trim(colorvec(j)) // "}"
-!        enddo
-!        write(unitno, *) ""
-!        write(unitno, *) "\begin{document}"
-!        write(unitno, *) ""
-!        write(unitno, *) "\begin{tikzpicture}"
-!        write(unitno, *) ""
-!        write(unitno, *) ""
-! end subroutine write_preamble
 
 subroutine write_preamble(colorvec, colorname, unitno, fpath, tikz)
         integer, intent(in) :: unitno
         character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
         character(len=*), intent(in) :: fpath, tikz
         integer :: j
+        character(len=:), allocatable :: pw, ph
 
         open(unitno, file=trim(fpath) // trim(tikz), status='unknown')
 
         ! Use '(a)' to ensure no leading spaces are inserted by the compiler
-        write(unitno, '(a)') "\documentclass[tikz]{standalone}"
+        write(unitno, '(a)') "\documentclass[tikz" // style_border_opt() // "]{standalone}"
         write(unitno, '(a)') "\usepackage{tikz}"
         write(unitno, '(a)') "\usepackage{pgfplots}"
         write(unitno, '(a)') "\usetikzlibrary{decorations}"
@@ -1957,15 +2461,21 @@ subroutine write_preamble(colorvec, colorname, unitno, fpath, tikz)
         write(unitno, '(a)') "\usepackage{sfmath}"
 
         if (isGroupPlot) then
-            write(unitno, '(a)') "\pgfplotsset{compat=newest, scale only axis, width = 5cm, height = 5cm}"
+            pw = PANEL_W_GROUP
+            ph = PANEL_H
+            if (allocated(group_pw_override)) pw = group_pw_override
+            if (allocated(group_ph_override)) ph = group_ph_override
+            write(unitno, '(a)') "\pgfplotsset{compat=newest, scale only axis, width = " &
+                // pw // ", height = " // ph // "}"
         else
-            write(unitno, '(a)') "\pgfplotsset{compat=newest, scale only axis, width = 9cm, height = 5cm}"
+            write(unitno, '(a)') "\pgfplotsset{compat=newest, scale only axis, width = " &
+                // PANEL_W_SINGLE // ", height = " // PANEL_H // "}"
         endif
 
         ! --- Style Definition: sciclean ---
         write(unitno, '(a)') "\pgfplotsset{"
         write(unitno, '(a)') "    sciclean/.style={"
-        write(unitno, '(a)') "        font=\footnotesize,"
+        write(unitno, '(a)') "        font=" // cur_font_axis() // ","
         write(unitno, '(a)') "        axis background/.style={fill=white},"
         write(unitno, '(a)') "        axis on top=false,"
         ! Note: axis lines=left combined with tick pos=both might hide top/right ticks
@@ -1977,9 +2487,14 @@ subroutine write_preamble(colorvec, colorname, unitno, fpath, tikz)
         write(unitno, '(a)') "        grid=major,"
         write(unitno, '(a)') "        grid style={dashed, gray!30},"
         write(unitno, '(a)') "        enlargelimits=false,"
-        write(unitno, '(a)') "        title style={font=\small\bfseries, yshift=0.5em},"
-        write(unitno, '(a)') "        label style={font=\footnotesize},"
-        write(unitno, '(a)') "        tick label style={font=\scriptsize},"
+        write(unitno, '(a)') "        title style={font=" // cur_font_title() // ", yshift=0.5em},"
+        write(unitno, '(a)') "        label style={font=" // cur_font_axis() // "},"
+        write(unitno, '(a)') "        tick label style={"
+        write(unitno, '(a)') "            font=" // cur_font_tick() // ", "
+        write(unitno, '(a)') "            /pgf/number format/fixed, "
+        write(unitno, '(a)') "            /pgf/number format/precision=" // num2str(style_precision)
+        write(unitno, '(a)') "        },"
+        write(unitno, '(a)') "        scaled y ticks=false"
         write(unitno, '(a)') "    }"
         write(unitno, '(a)') "}"
 
@@ -2033,75 +2548,6 @@ subroutine write_preamble(colorvec, colorname, unitno, fpath, tikz)
     end subroutine write_preamble
 
 
-! subroutine write_preamble(colorvec, colorname, unitno, fpath, tikz)
-!         integer, intent(in) :: unitno
-!         character(len=:), dimension(:), allocatable, intent(in) :: colorvec, colorname
-!         character(len=*), intent(in) :: fpath, tikz
-!         integer :: j
-
-!         open(unitno, file=trim(fpath) // trim(tikz), status='unknown')
-
-!         ! --- Standard Headers ---
-!         write(unitno, '(a)') "\documentclass[tikz, margin=5pt]{standalone}"
-!         write(unitno, '(a)') "\usepackage{pgfplots}"
-!         write(unitno, '(a)') "\pgfplotsset{compat=newest}"
-!         write(unitno, '(a)') "\usepgfplotslibrary{groupplots}"
-!         ! Useful libraries typically needed by the module's other features
-!         write(unitno, '(a)') "\usetikzlibrary{calc, positioning, plotmarks, decorations.pathreplacing}"
-
-!         ! --- Fonts (New) ---
-!         write(unitno, '(a)') "\usepackage[T1]{fontenc}"
-!         write(unitno, '(a)') "\usepackage[scaled]{helvet}"
-!         write(unitno, '(a)') "\renewcommand\familydefault{\sfdefault}"
-!         write(unitno, '(a)') "\usepackage{sfmath}"
-
-!         ! --- Style Definition: sciclean ---
-!         write(unitno, '(a)') "\pgfplotsset{"
-!         write(unitno, '(a)') "    sciclean/.style={"
-!         write(unitno, '(a)') "        font=\footnotesize,"
-!         write(unitno, '(a)') "        axis background/.style={fill=white},"
-!         write(unitno, '(a)') "        axis on top=false,"
-!         write(unitno, '(a)') "        axis lines=left,"
-!         write(unitno, '(a)') "        axis line style={-, black},"
-!         write(unitno, '(a)') "        tick align=inside,"
-!         write(unitno, '(a)') "        tick pos=both,"
-!         write(unitno, '(a)') "        major tick length=0.15cm,"
-!         write(unitno, '(a)') "        grid=major,"
-!         write(unitno, '(a)') "        grid style={dashed, gray!30},"
-!         write(unitno, '(a)') "        enlargelimits=false,"
-!         write(unitno, '(a)') "        title style={font=\small\bfseries, yshift=0.5em},"
-!         write(unitno, '(a)') "        label style={font=\footnotesize},"
-!         write(unitno, '(a)') "        tick label style={font=\scriptsize},"
-!         write(unitno, '(a)') "    }"
-!         write(unitno, '(a)') "}"
-
-!         ! --- Helper Macros (Preserved from original code) ---
-!         write(unitno, '(a)') ""
-!         write(unitno, '(a)') "% --- Macros for compatibility and utilities ---"
-!         write(unitno, '(a)') "\usepackage{xparse}"
-!         write(unitno, '(a)') "\NewDocumentCommand{\onslide}{s t+ d<>}{}"
-!         write(unitno, '(a)') "\NewDocumentCommand{\only}{d<>}{}"
-!         write(unitno, '(a)') "\NewDocumentCommand{\uncover}{d<>}{}"
-!         write(unitno, '(a)') "\NewDocumentCommand{\visible}{d<>}{}"
-!         write(unitno, '(a)') "\NewDocumentCommand{\invisible}{d<>}{}"
-
-!         write(unitno, '(a)') "\makeatletter"
-!         write(unitno, '(a)') "\tikzset{Sloped/.code = {\iftikz@fullytransformed\tikzset{sloped}\else\pgfgettransformentries{\mya}{\myb}{\myc}{\myd}{\mys}{\myt}\tikzset{sloped, transform shape, rotate = {atan2(\myb,\mya)}}\fi}}"
-!         write(unitno, '(a)') "\makeatother"
-
-!         write(unitno, '(a)') "\newcommand{\Getxycoords}[3]{\pgfplotsextra{\pgfplotspointgetcoordinates{(#1)}\global\pgfkeysgetvalue{/data point/x}{#2}\global\pgfkeysgetvalue{/data point/y}{#3}}}"
-!         write(unitno, '(a)') ""
-
-!         ! --- Color Definitions ---
-!         do j = 1, size(colorvec), 1
-!             write(unitno, '(a,a,a,a,a)') "\definecolor{", trim(colorname(j)), "}{HTML}{", trim(colorvec(j)), "}"
-!         enddo
-
-!         write(unitno, '(a)') ""
-!         write(unitno, '(a)') "\begin{document}"
-!         write(unitno, '(a)') "\begin{tikzpicture}"
-
-!     end subroutine write_preamble
 
 subroutine write_finale(unitno)
     integer, intent(in) :: unitno
@@ -2115,20 +2561,167 @@ end subroutine write_finale
 
 subroutine multi_plot_start(unitno)
     integer, intent(in) :: unitno
+    character(len=:), allocatable :: hs, vs
+        hs = SEP_H
+        vs = SEP_V
+        if (allocated(group_hsep_override)) hs = group_hsep_override
+        if (allocated(group_vsep_override)) vs = group_vsep_override
         write(unitno, *) "\begin{groupplot}["
         write(unitno, *) "    group style={"
         write(unitno, *) "        group size=" // num2str(col_group) // &
                                         " by " // num2str(row_group) // ","
-        write(unitno, *) "        horizontal sep=2cm,"
-        write(unitno, *) "         vertical sep=2cm"
+        write(unitno, *) "        horizontal sep=" // hs // ","
+        write(unitno, *) "        vertical sep=" // vs
         write(unitno, *) "}]"
 end subroutine multi_plot_start
 
-subroutine multi_plot_end(unitno)
+subroutine multi_plot_end(unitno, fpath)
     integer, intent(in) :: unitno
+    character(len=*), intent(in) :: fpath
+    integer :: i
+    character(len=:), allocatable :: overlay_file
 
         write(unitno, *) "\end{groupplot}"
+
+        do i = 1, fig_max
+            overlay_file = trim(fpath) // "__tikz_overlay_" // trim(num2str(i)) // ".tex"
+            call append_text_file(unitno, overlay_file)
+        end do
 end subroutine multi_plot_end
+
+subroutine append_text_file(unitno, fname)
+    integer, intent(in) :: unitno
+    character(len=*), intent(in) :: fname
+    integer :: uin, ios
+    character(len=1000) :: line
+    logical :: ex
+
+    inquire(file=trim(fname), exist=ex)
+    if (.not. ex) return
+
+    uin = 980
+    open(uin, file=trim(fname), status='old', action='read', iostat=ios)
+    if (ios /= 0) return
+
+    do
+        read(uin, '(A)', iostat=ios) line
+        if (ios /= 0) exit
+        write(unitno, '(a)') trim(line)
+    end do
+    close(uin)
+
+    open(uin, file=trim(fname), status='old')
+    close(uin, status='delete')
+end subroutine append_text_file
+
+
+
+subroutine multi_plot_yy(unitno, fpath, dat, fig_id, xlb, yl1, yl2, ti, &
+        xmin, xmax, ymin, ymax, y2min, y2max, &
+        l1_vec, l2_vec, opcolor, oplinestyle, opmarker, m1, m2, legend_pos)
+
+    integer, intent(in) :: unitno, fig_id, m1, m2
+    character(len=*), intent(in) :: fpath, dat, xlb, yl1, yl2, ti, legend_pos
+    real(wp), intent(in) :: xmin, xmax, ymin, ymax, y2min, y2max
+    character(len=*), dimension(:), intent(in) :: l1_vec, l2_vec
+    character(len=*), dimension(:), intent(in) :: opcolor, oplinestyle, opmarker
+
+    integer :: j, idx, unitov, grp_col, grp_row
+    character(len=40) :: groupnode
+    character(len=:), allocatable :: overlay_file
+
+    grp_col = mod(fig_id - 1, col_group) + 1
+    grp_row = (fig_id - 1) / col_group + 1
+    groupnode = "group c" // trim(num2str(grp_col)) // "r" // trim(num2str(grp_row))
+
+    ! Left axis: valid member inside groupplot
+    write(unitno, '(a)') "\nextgroupplot["
+    write(unitno, '(a)') "    sciclean,"
+    write(unitno, '(a)') "    scale only axis,"
+    write(unitno, '(a)') "    axis y line*=left,"
+    write(unitno, '(a)') "    tick pos=left,"
+    write(unitno, '(a,a,a)') "    xlabel={", trim(xlb), "},"
+    write(unitno, '(a,a,a)') "    ylabel={", trim(yl1), "},"
+    write(unitno, '(a,a,a)') "    xmin=", trim(num2str(xmin)), ","
+    write(unitno, '(a,a,a)') "    xmax=", trim(num2str(xmax)), ","
+    write(unitno, '(a,a,a)') "    ymin=", trim(num2str(ymin)), ","
+    write(unitno, '(a,a,a)') "    ymax=", trim(num2str(ymax)), ","
+    if (size(l1_vec) + size(l2_vec) > 0) then
+        write(unitno, '(a)') "    legend cell align=left,"
+        write(unitno, '(a,a,a)') "    legend pos=", trim(legend_pos), ","
+        write(unitno, '(a)') "    legend style={legend cell align=left, align=left, draw=white!15!black" // style_yy_legend_opt() // "},"
+    endif
+    if (len_trim(ti) > 0) write(unitno, '(a,a,a)') "    title={", trim(ti), "},"
+    write(unitno, '(a,a,a)') "    y axis line style={", trim(opcolor(1)), "},"
+    write(unitno, '(a,a,a)') "    yticklabel style={", trim(opcolor(1)), "},"
+    write(unitno, '(a,a,a,a)') "    ylabel style={", trim(opcolor(1)), "}"
+    write(unitno, '(a)') "]"
+
+    do j = 1, m1
+        write(unitno, '(a)', advance='no') "    \addplot[thick," // trim(opcolor(j))
+        if (len_trim(oplinestyle(j)) > 0) write(unitno, '(a)', advance='no') "," // trim(oplinestyle(j))
+        if (len_trim(opmarker(j)) > 0 .and. trim(opmarker(j)) /= 'false') &
+            write(unitno, '(a)', advance='no') ",mark=" // trim(opmarker(j))
+        write(unitno, '(a,i0,a,a,a)') "] table [x index=0, y index=", j, "] {", trim(dat), "};"
+        if (j <= size(l1_vec)) then
+            if (len_trim(l1_vec(j)) > 0) write(unitno, '(a,a,a)') "    \addlegendentry{", trim(l1_vec(j)), "}"
+        endif
+    end do
+
+    do j = 1, m2
+        idx = m1 + j
+        write(unitno, '(a)', advance='no') "    \addlegendimage{thick," // trim(opcolor(idx))
+        if (len_trim(oplinestyle(idx)) > 0) write(unitno, '(a)', advance='no') "," // trim(oplinestyle(idx))
+        if (len_trim(opmarker(idx)) > 0 .and. trim(opmarker(idx)) /= 'false') &
+            write(unitno, '(a)', advance='no') ",mark=" // trim(opmarker(idx))
+        write(unitno, '(a)') "}"
+        if (j <= size(l2_vec)) then
+            if (len_trim(l2_vec(j)) > 0) write(unitno, '(a,a,a)') "    \addlegendentry{", trim(l2_vec(j)), "}"
+        endif
+    end do
+
+    ! Right axis: write to temporary overlay file, to be emitted after \end{groupplot}
+    overlay_file = trim(fpath) // "__tikz_overlay_" // trim(num2str(fig_id)) // ".tex"
+    unitov = 900 + fig_id
+    open(unitov, file=trim(overlay_file), status='replace')
+
+    write(unitov, '(a)') "\begin{axis}["
+    write(unitov, '(a)') "    at={(" // trim(groupnode) // ".south west)},"
+    write(unitov, '(a)') "    anchor=south west,"
+    ! width/height intentionally omitted: the overlay inherits the global
+    ! \pgfplotsset panel size, so the right-hand axis box always coincides
+    ! with its subfigure regardless of how the panel size is set.
+    write(unitov, '(a)') "    sciclean,"
+    write(unitov, '(a)') "    scale only axis,"
+    write(unitov, '(a)') "    axis y line*=right,"
+    write(unitov, '(a)') "    axis x line=none,"
+    write(unitov, '(a)') "    grid=none,"
+    write(unitov, '(a)') "    axis background/.style={fill=none},"
+    write(unitov, '(a,a,a)') "    xmin=", trim(num2str(xmin)), ","
+    write(unitov, '(a,a,a)') "    xmax=", trim(num2str(xmax)), ","
+    write(unitov, '(a,a,a)') "    ymin=", trim(num2str(y2min)), ","
+    write(unitov, '(a,a,a)') "    ymax=", trim(num2str(y2max)), ","
+    write(unitov, '(a,a,a)') "    ylabel={", trim(yl2), "},"
+    write(unitov, '(a,a,a)') "    y axis line style={", trim(opcolor(m1+1)), "},"
+    write(unitov, '(a,a,a,a)') "    yticklabel style={", trim(opcolor(m1+1)), ", xshift=0.3em", "},"
+    write(unitov, '(a,a,a,a)') "    ylabel style={", trim(opcolor(m1+1)), "}"
+    write(unitov, '(a)') "]"
+
+    do j = 1, m2
+        idx = m1 + j
+        write(unitov, '(a)', advance='no') "    \addplot[thick," // trim(opcolor(idx))
+        if (len_trim(oplinestyle(idx)) > 0) write(unitov, '(a)', advance='no') "," // trim(oplinestyle(idx))
+        if (len_trim(opmarker(idx)) > 0 .and. trim(opmarker(idx)) /= 'false') &
+            write(unitov, '(a)', advance='no') ",mark=" // trim(opmarker(idx))
+        write(unitov, '(a,i0,a,a,a)') "] table [x index=0, y index=", idx, "] {", trim(dat), "};"
+    end do
+
+    write(unitov, '(a)') "\end{axis}"
+    write(unitov, '(a)') ""
+    close(unitov)
+
+end subroutine multi_plot_yy
+
 
 subroutine multi_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
         colorvec, colorname, title, xlb, ylb, legendvec, legend_type, legend_pos, &
@@ -2150,12 +2743,29 @@ subroutine multi_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
     write(unitno, *) "    xmax = " // num2str(xmax) // ","
     write(unitno, *) "    ymin = " // num2str(ymin) // ","
     write(unitno, *) "    ymax = " // num2str(ymax) // ","
-    write(unitno, *) "    legend cell align = left,"
-    write(unitno, *) "    legend pos = " // trim(legend_pos) // ","
+    if (trim(legend_pos) == "below") then
+        write(unitno, *) "    legend image code/.code = {\draw[#1] (0mm,0mm) -- (4mm,0mm);},"
+        write(unitno, *) "    legend style = {at = {(0.5," // style_legend_below_at() // ")}, anchor = north, legend columns = " // &
+            num2str(style_legend_below_ncol(size(legendvec))) // ", font = " // style_legend_below_fontcmd() // ", " // &
+            "/tikz/every even column/.append style = {column sep = 0.3em}, legend cell align = left, draw = none},"
+    else if (trim(legend_pos) == "center left") then
+        write(unitno, *) "    legend style={at={(0.03,0.25)},anchor=west,draw=black,fill=white,font=" // &
+            cur_font_tick() // ",legend cell align=left},"
+    else if (trim(legend_pos) == "center right") then
+        write(unitno, *) "    legend style={at={(0.97,0.55)},anchor=east,draw=black,fill=white,font=" // &
+            cur_font_tick() // ",legend cell align=left},"
+    else
+        write(unitno, *) "    legend cell align = left,"
+        if (style_legend_box) write(unitno, *) "    legend style={draw=black,fill=white,font=" // cur_font_tick() // "},"
+        if (size(legendvec) > 0 .or. pending_band_legend()) &
+            write(unitno, *) "    legend pos = " // trim(legend_pos) // ","
+    end if
     write(unitno, *) "    title = {" // title // "}]"
     write(unitno, *) ""
+    call write_pending_bands(unitno, ymin, ymax)
     call plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, &
        legend_type, opcolor, oplinestyle, opmarker)
+    call draw_vlines(unitno, ymin, ymax)
     write(unitno, *) ""
 end subroutine multi_plot
 
@@ -2174,19 +2784,37 @@ subroutine single_plot(unitno, fpath, tikz, dat, nj, xmin, xmax, ymin, ymax, &
 
     write(unitno, *) "\begin{axis}["
     write(unitno, *) "    sciclean,"
+    if (trim(opt_xmode) == 'log') write(unitno, *) "    xmode = log, log ticks with fixed point,"
     write(unitno, *) "    xlabel = {" // xlb // "},"
     write(unitno, *) "    ylabel = {" // ylb // "},"
     write(unitno, *) "    xmin = " // num2str(xmin) // ","
     write(unitno, *) "    xmax = " // num2str(xmax) // ","
     write(unitno, *) "    ymin = " // num2str(ymin) // ","
     write(unitno, *) "    ymax = " // num2str(ymax) // ","
-    write(unitno, *) "    legend cell align = left,"
-    write(unitno, *) "    legend pos = " // trim(legend_pos) // ","
+    if (trim(legend_pos) == "below") then
+        write(unitno, *) "    legend image code/.code = {\draw[#1] (0mm,0mm) -- (4mm,0mm);},"
+        write(unitno, *) "    legend style = {at = {(0.5," // style_legend_below_at() // ")}, anchor = north, legend columns = " // &
+            num2str(style_legend_below_ncol(size(legendvec))) // ", font = " // style_legend_below_fontcmd() // ", " // &
+            "/tikz/every even column/.append style = {column sep = 0.3em}, legend cell align = left, draw = none},"
+    else if (trim(legend_pos) == "center left") then
+        write(unitno, *) "    legend style={at={(0.03,0.25)},anchor=west,draw=black,fill=white,font=" // &
+            cur_font_tick() // ",legend cell align=left},"
+    else if (trim(legend_pos) == "center right") then
+        write(unitno, *) "    legend style={at={(0.97,0.55)},anchor=east,draw=black,fill=white,font=" // &
+            cur_font_tick() // ",legend cell align=left},"
+    else
+        write(unitno, *) "    legend cell align = left,"
+        if (style_legend_box) write(unitno, *) "    legend style={draw=black,fill=white,font=" // cur_font_tick() // "},"
+        if (size(legendvec) > 0 .or. pending_band_legend()) &
+            write(unitno, *) "    legend pos = " // trim(legend_pos) // ","
+    end if
     write(unitno, *) "    title = {" // title // "}]"
     write(unitno, *) ""
     write(unitno, *) ""
+    call write_pending_bands(unitno, ymin, ymax)
     call plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, &
        legend_type, opcolor, oplinestyle, opmarker)
+    call draw_vlines(unitno, ymin, ymax)
     write(unitno, *) ""
     write(unitno, *) ""
     write(unitno, *) "\end{axis}"
@@ -2242,6 +2870,7 @@ subroutine surf_single_plot(unitno, fpath, tikz, dat, xmin, xmax, ymin, ymax, &
 
     write(unitno, *) "\begin{axis}["
     write(unitno, *) "    sciclean,"
+    if (trim(opt_xmode) == 'log') write(unitno, *) "    xmode = log, log ticks with fixed point,"
     write(unitno, *) "    xlabel = {" // xlb // "},"
     write(unitno, *) "    ylabel = {" // ylb // "},"
     write(unitno, *) "    ylabel style = {Sloped},"
@@ -2274,41 +2903,74 @@ subroutine plotting(unitno, nj, colorvec, colorname, fpath, dat, legendvec, lege
     character(len=*), intent(in) :: legend_type
 
     integer :: j
+    character(len=16) :: sm
+    character(len=32) :: ms
+
+    sm = ''
+    ms = ''
+    if (allocated(marksize_override)) ms = ', mark size=' // marksize_override
+    if (smooth_override) sm = ', smooth'
 
     do j = 1, nj, 1
         select case (trim(legend_type))
         case ('line')
             if (opmarker(j) == 'false') then
                 write(unitno, *) "\addplot[name path = " // num2str(j) // &
-                    ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
-                    "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
+                    ", " // trim(style_linewidth) // ", " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                    trim(sm) // "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
                     "}]{" // dat // "} node[" // trim(opcolor(j)) // ", pos=0.5, above, Sloped]{" // trim(legendvec(j)) // "};"
             else
                 write(unitno, *) "\addplot[name path = " // num2str(j) // &
-                    ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
-                    ", mark=" // trim(opmarker(j)) // &
-                    "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
+                    ", " // trim(style_linewidth) // ", " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                    ", mark=" // trim(opmarker(j)) // trim(ms) // &
+                    trim(sm) // "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
                     "}]{" // dat // "} node[" // trim(opcolor(j)) // ", pos=0.5, above, Sloped]{" // trim(legendvec(j)) // "};"
             endif
         case ('box')
             if (opmarker(j) == 'false') then
                 write(unitno, *) "\addplot[name path = " // num2str(j) // &
-                    ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
-                    "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
+                    ", " // trim(style_linewidth) // ", " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                    trim(sm) // "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
                     "}]{" // dat // "};"
-                write(unitno, *) "\addlegendentry{" // trim(legendvec(j)) // "}"
+                if (size(legendvec) >= j) then
+                    if (len_trim(legendvec(j)) > 0) write(unitno, *) "\addlegendentry{" // trim(legendvec(j)) // "}"
+                endif
             else
                 write(unitno, *) "\addplot[name path = " // num2str(j) // &
-                    ", thick, " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
-                    ", mark=" // trim(opmarker(j)) // &
-                    "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
+                    ", " // trim(style_linewidth) // ", " // trim(oplinestyle(j)) // ", color=" // trim(opcolor(j)) // &
+                    ", mark=" // trim(opmarker(j)) // trim(ms) // &
+                    trim(sm) // "] table [x expr=\thisrowno{0}, y expr=\thisrowno{" // num2str(j) // &
                     "}]{" // dat // "};"
-                write(unitno, *) "\addlegendentry{" // trim(legendvec(j)) // "}"
+                if (size(legendvec) >= j) then
+                    if (len_trim(legendvec(j)) > 0) write(unitno, *) "\addlegendentry{" // trim(legendvec(j)) // "}"
+                endif
             endif
         end select
     enddo
 
 end subroutine plotting
+
+! vertical marks (option 'vlines: x1,x2,...' with optional 'vlabels: l1,l2,...'): gray dashed
+! lines over the full y range, labelled above the axis; labels must not contain ',' ';' or ':'
+subroutine draw_vlines(unitno, ymin, ymax)
+    integer, intent(in) :: unitno
+    real(wp), intent(in) :: ymin, ymax
+    integer :: j
+    if (.not. allocated(opt_vlines)) return
+    do j = 1, size(opt_vlines)
+        if (len_trim(opt_vlines(j)) == 0) cycle
+        write(unitno, '(a)', advance='no') "\draw[gray, densely dashed] (axis cs:" // trim(adjustl(opt_vlines(j))) // &
+            "," // num2str(ymin) // ") -- (axis cs:" // trim(adjustl(opt_vlines(j))) // "," // num2str(ymax) // ")"
+        if (allocated(opt_vlabels)) then
+            if (size(opt_vlabels) >= j) then
+                if (len_trim(opt_vlabels(j)) > 0) write(unitno, '(a)', advance='no') &
+                    " node[pos=1, anchor=north east, rotate=90, gray, font=\tiny, inner sep=1.5pt] {" // &
+                    trim(adjustl(opt_vlabels(j))) // "}"
+            end if
+        end if
+        write(unitno, '(a)') ";"
+    end do
+end subroutine draw_vlines
 
 subroutine write_dat(x, y, ni, nj, unitdat, fpath, dat)
     real(wp), intent(in) :: x(:), y(:, :)
@@ -2616,7 +3278,7 @@ subroutine typeset(fpath, fname, tikz, isSaveFile)
 
     integer :: ierr, i
     character(len=:), allocatable :: cmd, cmd_sep, null_dev, cd_cmd, del_cmd
-    character(len=:), allocatable :: clean_list
+    character(len=:), allocatable :: clean_list, engine_cmd
     character(len=10) :: win_check
     logical :: is_windows
 
@@ -2644,15 +3306,29 @@ subroutine typeset(fpath, fname, tikz, isSaveFile)
     end if
 
     ! 3. COMPILE PDF
+    ! The standalone figures use only pdfLaTeX-compatible packages. The default
+    ! engine is latexmk with pdfLaTeX: LuaLaTeX can spend an unbounded amount of
+    ! time rebuilding its font database when launched from a long-running OpenMP
+    ! executable on macOS. tikz_style(engine=...) selects 'pdflatex' or 'lualatex'.
+    select case (trim(style_engine))
+    case ('lualatex')
+        engine_cmd = "lualatex -interaction=nonstopmode -halt-on-error "
+    case ('pdflatex')
+        engine_cmd = "pdflatex -interaction=nonstopmode -halt-on-error "
+    case default
+        engine_cmd = "latexmk -pdf -interaction=nonstopmode -halt-on-error "
+    end select
     cmd = cd_cmd // '"' // trim(fpath) // '"' // cmd_sep // &
-          "lualatex " // '"' // trim(tikz) // '"' // null_dev
+          engine_cmd // '"' // trim(tikz) // '"' // null_dev
 
     write(*, '(A)', advance='no') ' >> Compiling ' // trim(tikz) // '... '
     call execute_command_line(cmd, exitstat=ierr)
 
     if (ierr /= 0) then
         write(*, *) "[FAILED]"
-        write(ERROR_UNIT, *) "Error: pdflatex failed. Check your LaTeX installation."
+        write(ERROR_UNIT, *) "Error: " // trim(style_engine) // " failed on " // trim(tikz) // ". Check the figure log."
+        ! tikz_style(stop_on_error=.true.) aborts here, keeping the source and log
+        if (style_stop_on_error) error stop 'Figure compilation failed; source and log retained.'
     else
         write(*, *) "[DONE]"
     end if
@@ -2688,6 +3364,20 @@ end subroutine typeset
 subroutine set_opener
 
     integer :: OS
+    character(len=8) :: env
+    logical :: do_open
+
+    ! tikz_style(open_figures=...) sets whether each compiled PDF is opened in the
+    ! system viewer (default: yes). The environment variable TIKZ_OPEN_FIGURES
+    ! (0 or 1) overrides it without recompiling, e.g. for batch runs.
+    do_open = style_open_figures
+    call get_environment_variable('TIKZ_OPEN_FIGURES', env)
+    if (trim(env) == '0') do_open = .false.
+    if (trim(env) == '1') do_open = .true.
+    if (.not. do_open) then
+        opener = 'true'
+        return
+    end if
 
     OS = get_os_type()
 
@@ -2702,7 +3392,8 @@ subroutine set_opener
 
 end subroutine set_opener
 
-!! Source: fpm
+!! Source: fpm, the Fortran Package Manager (https://github.com/fortran-lang/fpm),
+!! MIT License, Copyright (c) 2020 fpm contributors.
 integer function get_os_type() result(r)
     !!
     !! Returns one of OS_UNKNOWN, OS_LINUX, OS_MACOS, OS_WINDOWS, OS_CYGWIN,
